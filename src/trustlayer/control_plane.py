@@ -52,6 +52,19 @@ class _Backend(Protocol):
     def distribution_state(self, instance_id: str, tenant_id: str) -> dict[str, Any] | None:
         ...
 
+    def list_bundles(self, limit: int = 50) -> list[dict[str, Any]]:
+        ...
+
+    def list_tenant_bindings(self, limit: int = 100) -> list[dict[str, Any]]:
+        ...
+
+    def list_distribution_status(
+        self,
+        limit: int = 100,
+        tenant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        ...
+
 
 class _SQLiteControlPlaneBackend:
     backend_kind = "sqlite"
@@ -202,6 +215,51 @@ class _SQLiteControlPlaneBackend:
         if row is None:
             return None
         return dict(row)
+
+    def list_bundles(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT bundle_version, created_by, change_summary, created_at
+                FROM policy_bundles
+                ORDER BY created_at DESC, bundle_version DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_tenant_bindings(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT tenant_id, bundle_version, rollout_state, updated_at
+                FROM tenant_policy_bindings
+                ORDER BY updated_at DESC, tenant_id ASC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def list_distribution_status(
+        self,
+        limit: int = 100,
+        tenant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT instance_id, tenant_id, bundle_version, status, updated_at
+            FROM distribution_status
+        """
+        params: list[Any] = []
+        if tenant_id is not None:
+            query += " WHERE tenant_id = ?"
+            params.append(tenant_id)
+        query += " ORDER BY updated_at DESC, instance_id ASC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+        return [dict(row) for row in rows]
 
 
 class _PostgresControlPlaneBackend:
@@ -375,6 +433,82 @@ class _PostgresControlPlaneBackend:
             result["updated_at"] = str(result["updated_at"])
         return result
 
+    def list_bundles(self, limit: int = 50) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT bundle_version, created_by, change_summary, created_at
+                    FROM policy_bundles
+                    ORDER BY created_at DESC, bundle_version DESC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "bundle_version": row["bundle_version"],
+                "created_by": row["created_by"],
+                "change_summary": row["change_summary"],
+                "created_at": str(row["created_at"]),
+            }
+            for row in rows
+        ]
+
+    def list_tenant_bindings(self, limit: int = 100) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT tenant_id, bundle_version, rollout_state, updated_at
+                    FROM tenant_policy_bindings
+                    ORDER BY updated_at DESC, tenant_id ASC
+                    LIMIT %s
+                    """,
+                    (limit,),
+                )
+                rows = cur.fetchall()
+        return [
+            {
+                "tenant_id": row["tenant_id"],
+                "bundle_version": row["bundle_version"],
+                "rollout_state": row["rollout_state"],
+                "updated_at": str(row["updated_at"]),
+            }
+            for row in rows
+        ]
+
+    def list_distribution_status(
+        self,
+        limit: int = 100,
+        tenant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        query = """
+            SELECT instance_id, tenant_id, bundle_version, status, updated_at
+            FROM distribution_status
+        """
+        params: list[Any] = []
+        if tenant_id is not None:
+            query += " WHERE tenant_id = %s"
+            params.append(tenant_id)
+        query += " ORDER BY updated_at DESC, instance_id ASC LIMIT %s"
+        params.append(limit)
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(query, tuple(params))
+                rows = cur.fetchall()
+        return [
+            {
+                "instance_id": row["instance_id"],
+                "tenant_id": row["tenant_id"],
+                "bundle_version": row["bundle_version"],
+                "status": row["status"],
+                "updated_at": str(row["updated_at"]),
+            }
+            for row in rows
+        ]
+
 
 class ControlPlaneStore:
     def __init__(self, location: str | Path) -> None:
@@ -423,6 +557,19 @@ class ControlPlaneStore:
 
     def distribution_state(self, instance_id: str, tenant_id: str) -> dict[str, Any] | None:
         return self._backend.distribution_state(instance_id, tenant_id)
+
+    def list_bundles(self, limit: int = 50) -> list[dict[str, Any]]:
+        return self._backend.list_bundles(limit)
+
+    def list_tenant_bindings(self, limit: int = 100) -> list[dict[str, Any]]:
+        return self._backend.list_tenant_bindings(limit)
+
+    def list_distribution_status(
+        self,
+        limit: int = 100,
+        tenant_id: str | None = None,
+    ) -> list[dict[str, Any]]:
+        return self._backend.list_distribution_status(limit, tenant_id)
 
 
 class RuleManagementService:

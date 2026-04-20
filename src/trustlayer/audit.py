@@ -266,3 +266,104 @@ class AuditStore:
 
         items.sort(key=lambda item: (priority.get(item["decision"], 99), item["created_at"], item["request_id"]))
         return items[:limit]
+
+    def search_events(
+        self,
+        *,
+        tenant_id: str | None = None,
+        session_id: str | None = None,
+        request_id: str | None = None,
+        event_type: str | None = None,
+        destination_host: str | None = None,
+        limit: int = 50,
+    ) -> list[AuditEvent]:
+        conditions: list[str] = []
+        params: list[Any] = []
+        if tenant_id:
+            conditions.append("tenant_id = ?")
+            params.append(tenant_id)
+        if session_id:
+            conditions.append("session_id = ?")
+            params.append(session_id)
+        if request_id:
+            conditions.append("request_id = ?")
+            params.append(request_id)
+        if event_type:
+            conditions.append("event_type = ?")
+            params.append(event_type)
+
+        query = """
+            SELECT rowid AS sequence, event_id, session_id, request_id, tenant_id, event_type,
+                   decision, policy_id, summary, metadata_json, created_at
+            FROM events
+        """
+        if conditions:
+            query += " WHERE " + " AND ".join(conditions)
+        query += " ORDER BY rowid DESC LIMIT ?"
+        params.append(limit * 5 if destination_host else limit)
+
+        with self._connect() as conn:
+            rows = conn.execute(query, tuple(params)).fetchall()
+
+        items: list[AuditEvent] = []
+        for row in rows:
+            metadata = json.loads(row["metadata_json"])
+            if destination_host and metadata.get("destination_host") != destination_host:
+                continue
+            items.append(
+                AuditEvent(
+                    sequence=int(row["sequence"]),
+                    event_id=row["event_id"],
+                    session_id=row["session_id"],
+                    request_id=row["request_id"],
+                    tenant_id=row["tenant_id"],
+                    event_type=row["event_type"],
+                    decision=row["decision"],
+                    policy_id=row["policy_id"],
+                    summary=row["summary"],
+                    metadata=metadata,
+                    created_at=row["created_at"],
+                )
+            )
+            if len(items) >= limit:
+                break
+        return items
+
+    def dashboard_stats(self) -> dict[str, Any]:
+        with self._connect() as conn:
+            totals = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS total_events,
+                    COUNT(DISTINCT session_id) AS total_sessions
+                FROM events
+                """
+            ).fetchone()
+            decision_rows = conn.execute(
+                """
+                SELECT decision, COUNT(*) AS count
+                FROM events
+                WHERE decision IS NOT NULL
+                GROUP BY decision
+                """
+            ).fetchall()
+            event_rows = conn.execute(
+                """
+                SELECT event_type, COUNT(*) AS count
+                FROM events
+                GROUP BY event_type
+                """
+            ).fetchall()
+
+        decisions = {
+            str(row["decision"]): int(row["count"])
+            for row in decision_rows
+            if row["decision"] is not None
+        }
+        event_counts = {str(row["event_type"]): int(row["count"]) for row in event_rows}
+        return {
+            "total_events": int(totals["total_events"]) if totals else 0,
+            "total_sessions": int(totals["total_sessions"]) if totals else 0,
+            "decision_counts": decisions,
+            "event_counts": event_counts,
+        }

@@ -8,6 +8,7 @@
 - `egress check`：secret / PII 扫描、新域名检测、外发决策
 - `audit timeline`：按 `session_id` 回放关键事件
 - `mcp gateway`：统一代理 MCP / skill 风格输入，并复用 ingress sanitize
+- `control console`：内置 Dashboard / Policies / Distribution / Audit Search 四页最小后台
 
 当前迁移策略是：
 
@@ -123,6 +124,7 @@ PYTHONPATH=src python3 -m trustlayer.ops_report --db-path audit.sqlite3
 
 - [docs/15-operations-sop.md](docs/15-operations-sop.md)
 - [docs/16-production-control-plane-architecture.md](docs/16-production-control-plane-architecture.md)
+- [docs/17-control-console.md](docs/17-control-console.md)
 
 可用接口：
 
@@ -140,6 +142,11 @@ PYTHONPATH=src python3 -m trustlayer.ops_report --db-path audit.sqlite3
 - `GET /v1/sessions/<session_id>/timeline`
 - `GET /v1/approvals/queue?tenant_id=<tenant>`
 - `GET /approvals/queue?tenant_id=<tenant>`
+- `GET /console`
+- `GET /console/dashboard`
+- `GET /console/policies`
+- `GET /console/distribution`
+- `GET /console/audit`
 - `GET /healthz`
 
 默认 MCP 入口工具：

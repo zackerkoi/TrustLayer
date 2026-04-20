@@ -161,6 +161,41 @@ def create_app(
                     _render_approval_queue_page(tenant_id, items),
                 )
 
+            if method == "GET" and path in {"/console", "/console/"}:
+                return _html_response(
+                    start_response,
+                    200,
+                    _render_console_dashboard_page(service, control_store),
+                )
+
+            if method == "GET" and path == "/console/dashboard":
+                return _html_response(
+                    start_response,
+                    200,
+                    _render_console_dashboard_page(service, control_store),
+                )
+
+            if method == "GET" and path == "/console/policies":
+                return _html_response(
+                    start_response,
+                    200,
+                    _render_console_policies_page(control_store),
+                )
+
+            if method == "GET" and path == "/console/distribution":
+                return _html_response(
+                    start_response,
+                    200,
+                    _render_console_distribution_page(control_store, query),
+                )
+
+            if method == "GET" and path == "/console/audit":
+                return _html_response(
+                    start_response,
+                    200,
+                    _render_console_audit_page(service, query),
+                )
+
             if method == "GET" and path == "/v1/mcp/tools":
                 if mcp_gateway is None:
                     return _json_response(start_response, 404, {"error": "mcp_gateway_disabled"})
@@ -357,3 +392,302 @@ def _render_approval_queue_page(tenant_id: str, items: list[dict[str, Any]]) -> 
     </table>
   </body>
 </html>"""
+
+
+def _render_console_dashboard_page(
+    service: DefenseGatewayService,
+    control_store: ControlPlaneStore | None,
+) -> str:
+    stats = service.audit.dashboard_stats()
+    decision_counts = stats.get("decision_counts", {})
+    event_counts = stats.get("event_counts", {})
+    bindings = control_store.list_tenant_bindings(limit=5) if control_store is not None else []
+    distributions = control_store.list_distribution_status(limit=5) if control_store is not None else []
+
+    cards = [
+        ("Total Events", str(stats.get("total_events", 0))),
+        ("Sessions", str(stats.get("total_sessions", 0))),
+        ("Blocked", str(decision_counts.get("block", 0))),
+        ("Review Required", str(decision_counts.get("review_required", 0))),
+        ("Sanitized Inputs", str(event_counts.get("source_sanitized", 0))),
+        ("Allowed", str(decision_counts.get("allow", 0))),
+    ]
+    card_html = "".join(
+        f"<div class='card'><div class='card-label'>{escape(label)}</div><div class='card-value'>{escape(value)}</div></div>"
+        for label, value in cards
+    )
+    bindings_html = _rows_or_empty(
+        [
+            (
+                item.get("tenant_id", ""),
+                item.get("bundle_version", ""),
+                item.get("rollout_state", ""),
+                item.get("updated_at", ""),
+            )
+            for item in bindings
+        ],
+        columns=4,
+    )
+    distributions_html = _rows_or_empty(
+        [
+            (
+                item.get("instance_id", ""),
+                item.get("tenant_id", ""),
+                item.get("bundle_version", ""),
+                item.get("status", ""),
+            )
+            for item in distributions
+        ],
+        columns=4,
+    )
+    body = f"""
+    <section class='hero'>
+      <h1>TrustLayer Control Console</h1>
+      <p>运营视角看执行面、规则绑定和最近分发状态。</p>
+    </section>
+    <section class='cards'>{card_html}</section>
+    <section class='grid two-up'>
+      <div class='panel'>
+        <h2>Recent Tenant Bindings</h2>
+        <table>
+          <thead><tr><th>Tenant</th><th>Bundle</th><th>State</th><th>Updated</th></tr></thead>
+          <tbody>{bindings_html}</tbody>
+        </table>
+      </div>
+      <div class='panel'>
+        <h2>Recent Distribution Status</h2>
+        <table>
+          <thead><tr><th>Instance</th><th>Tenant</th><th>Bundle</th><th>Status</th></tr></thead>
+          <tbody>{distributions_html}</tbody>
+        </table>
+      </div>
+    </section>
+    """
+    return _render_console_layout("Dashboard", body)
+
+
+def _render_console_policies_page(control_store: ControlPlaneStore | None) -> str:
+    bundles = control_store.list_bundles(limit=20) if control_store is not None else []
+    bindings = control_store.list_tenant_bindings(limit=50) if control_store is not None else []
+    bundle_rows = _rows_or_empty(
+        [
+            (
+                item.get("bundle_version", ""),
+                item.get("created_by", ""),
+                item.get("change_summary", ""),
+                item.get("created_at", ""),
+            )
+            for item in bundles
+        ],
+        columns=4,
+    )
+    binding_rows = _rows_or_empty(
+        [
+            (
+                item.get("tenant_id", ""),
+                item.get("bundle_version", ""),
+                item.get("rollout_state", ""),
+                item.get("updated_at", ""),
+            )
+            for item in bindings
+        ],
+        columns=4,
+    )
+    body = f"""
+    <section class='hero'>
+      <h1>Policies</h1>
+      <p>查看 bundle 版本、租户绑定和最近变更摘要。</p>
+    </section>
+    <section class='panel'>
+      <h2>Policy Bundles</h2>
+      <table>
+        <thead><tr><th>Bundle</th><th>Created By</th><th>Change Summary</th><th>Created</th></tr></thead>
+        <tbody>{bundle_rows}</tbody>
+      </table>
+    </section>
+    <section class='panel'>
+      <h2>Tenant Bindings</h2>
+      <table>
+        <thead><tr><th>Tenant</th><th>Bundle</th><th>State</th><th>Updated</th></tr></thead>
+        <tbody>{binding_rows}</tbody>
+      </table>
+    </section>
+    """
+    return _render_console_layout("Policies", body)
+
+
+def _render_console_distribution_page(
+    control_store: ControlPlaneStore | None,
+    query: dict[str, list[str]],
+) -> str:
+    tenant_id = query.get("tenant_id", [""])[0] or None
+    items = control_store.list_distribution_status(limit=100, tenant_id=tenant_id) if control_store is not None else []
+    rows = _rows_or_empty(
+        [
+            (
+                item.get("instance_id", ""),
+                item.get("tenant_id", ""),
+                item.get("bundle_version", ""),
+                item.get("status", ""),
+                item.get("updated_at", ""),
+            )
+            for item in items
+        ],
+        columns=5,
+    )
+    tenant_value = escape(tenant_id or "")
+    body = f"""
+    <section class='hero'>
+      <h1>Distribution</h1>
+      <p>查看规则分发是否已经同步到各个 gateway 实例。</p>
+    </section>
+    <section class='panel'>
+      <form class='filters' method='get' action='/console/distribution'>
+        <label>Tenant <input type='text' name='tenant_id' value='{tenant_value}' placeholder='tenant-a' /></label>
+        <button type='submit'>Filter</button>
+      </form>
+      <table>
+        <thead><tr><th>Instance</th><th>Tenant</th><th>Bundle</th><th>Status</th><th>Updated</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </section>
+    """
+    return _render_console_layout("Distribution", body)
+
+
+def _render_console_audit_page(
+    service: DefenseGatewayService,
+    query: dict[str, list[str]],
+) -> str:
+    tenant_id = query.get("tenant_id", [""])[0] or None
+    session_id = query.get("session_id", [""])[0] or None
+    request_id = query.get("request_id", [""])[0] or None
+    event_type = query.get("event_type", [""])[0] or None
+    destination_host = query.get("destination_host", [""])[0] or None
+    items = service.audit.search_events(
+        tenant_id=tenant_id,
+        session_id=session_id,
+        request_id=request_id,
+        event_type=event_type,
+        destination_host=destination_host,
+        limit=100,
+    )
+    rows = []
+    for item in items:
+        risk_flags = ", ".join(item.metadata.get("risk_flags") or []) or "none"
+        rows.append(
+            "<tr>"
+            f"<td>{escape(item.created_at)}</td>"
+            f"<td>{escape(item.tenant_id)}</td>"
+            f"<td>{escape(item.session_id)}</td>"
+            f"<td>{escape(item.request_id)}</td>"
+            f"<td>{escape(item.event_type)}</td>"
+            f"<td>{escape(item.decision or '')}</td>"
+            f"<td>{escape(item.metadata.get('destination_host') or item.metadata.get('origin') or '')}</td>"
+            f"<td>{escape(risk_flags)}</td>"
+            "</tr>"
+        )
+    rows_html = "\n".join(rows) if rows else "<tr><td colspan='8'>No matching events.</td></tr>"
+    body = f"""
+    <section class='hero'>
+      <h1>Audit Search</h1>
+      <p>按 tenant、session、request、event type 和 destination 检索事件链。</p>
+    </section>
+    <section class='panel'>
+      <form class='filters audit-filters' method='get' action='/console/audit'>
+        <label>Tenant <input type='text' name='tenant_id' value='{escape(tenant_id or '')}' /></label>
+        <label>Session <input type='text' name='session_id' value='{escape(session_id or '')}' /></label>
+        <label>Request <input type='text' name='request_id' value='{escape(request_id or '')}' /></label>
+        <label>Event <input type='text' name='event_type' value='{escape(event_type or '')}' /></label>
+        <label>Destination <input type='text' name='destination_host' value='{escape(destination_host or '')}' /></label>
+        <button type='submit'>Search</button>
+      </form>
+      <table>
+        <thead><tr><th>Created</th><th>Tenant</th><th>Session</th><th>Request</th><th>Event</th><th>Decision</th><th>Origin / Destination</th><th>Risk Flags</th></tr></thead>
+        <tbody>{rows_html}</tbody>
+      </table>
+    </section>
+    """
+    return _render_console_layout("Audit Search", body)
+
+
+def _render_console_layout(title: str, body: str) -> str:
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>{escape(title)} · TrustLayer</title>
+    <style>
+      :root {{
+        --bg: #f6efe3;
+        --surface: #fffaf4;
+        --ink: #1e293b;
+        --muted: #64748b;
+        --line: #d8c9ae;
+        --accent: #1d4ed8;
+        --accent-soft: #dbeafe;
+        --danger: #991b1b;
+        --warn: #92400e;
+      }}
+      * {{ box-sizing: border-box; }}
+      body {{ margin: 0; background: linear-gradient(180deg, #f3ead9 0%, var(--bg) 100%); color: var(--ink); font-family: Georgia, "Times New Roman", serif; }}
+      a {{ color: var(--accent); text-decoration: none; }}
+      .shell {{ max-width: 1320px; margin: 0 auto; padding: 24px; }}
+      .topbar {{ display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-bottom: 24px; }}
+      .brand {{ font-size: 28px; font-weight: 700; letter-spacing: 0.02em; }}
+      .subtitle {{ color: var(--muted); font-size: 14px; }}
+      .nav {{ display: flex; gap: 10px; flex-wrap: wrap; }}
+      .nav a {{ padding: 10px 14px; border: 1px solid var(--line); border-radius: 999px; background: rgba(255,255,255,0.65); }}
+      .hero {{ margin-bottom: 18px; }}
+      .hero h1 {{ margin: 0 0 8px; font-size: 36px; }}
+      .hero p {{ margin: 0; color: var(--muted); max-width: 760px; line-height: 1.5; }}
+      .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 14px; margin: 20px 0 28px; }}
+      .card, .panel {{ background: var(--surface); border: 1px solid var(--line); border-radius: 18px; box-shadow: 0 8px 20px rgba(85, 67, 24, 0.06); }}
+      .card {{ padding: 18px; }}
+      .card-label {{ color: var(--muted); font-size: 13px; text-transform: uppercase; letter-spacing: 0.06em; }}
+      .card-value {{ margin-top: 10px; font-size: 30px; font-weight: 700; }}
+      .panel {{ padding: 20px; margin-bottom: 20px; }}
+      .grid.two-up {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }}
+      h2 {{ margin: 0 0 14px; font-size: 22px; }}
+      table {{ width: 100%; border-collapse: collapse; }}
+      th, td {{ border-top: 1px solid var(--line); padding: 10px 12px; text-align: left; vertical-align: top; font-size: 14px; }}
+      th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }}
+      .filters {{ display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin-bottom: 16px; }}
+      .filters label {{ display: grid; gap: 6px; font-size: 13px; color: var(--muted); }}
+      .filters input {{ min-width: 170px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: white; }}
+      button {{ padding: 10px 14px; border: 1px solid #a7c3ff; border-radius: 12px; background: var(--accent-soft); color: #1e3a8a; cursor: pointer; }}
+      .audit-filters input {{ min-width: 140px; }}
+      @media (max-width: 900px) {{
+        .grid.two-up {{ grid-template-columns: 1fr; }}
+        .topbar {{ align-items: start; flex-direction: column; }}
+      }}
+    </style>
+  </head>
+  <body>
+    <div class="shell">
+      <div class="topbar">
+        <div>
+          <div class="brand">TrustLayer</div>
+          <div class="subtitle">Control plane view for gateway, policy distribution, and audit evidence.</div>
+        </div>
+        <nav class="nav">
+          <a href="/console/dashboard">Dashboard</a>
+          <a href="/console/policies">Policies</a>
+          <a href="/console/distribution">Distribution</a>
+          <a href="/console/audit">Audit Search</a>
+          <a href="/approvals/queue?tenant_id=demo">Approval Queue</a>
+        </nav>
+      </div>
+      {body}
+    </div>
+  </body>
+</html>"""
+
+
+def _rows_or_empty(rows: list[tuple[Any, ...]], *, columns: int) -> str:
+    if not rows:
+        return f"<tr><td colspan='{columns}'>No data yet.</td></tr>"
+    return "\n".join(
+        "<tr>" + "".join(f"<td>{escape(str(value or ''))}</td>" for value in row) + "</tr>"
+        for row in rows
+    )

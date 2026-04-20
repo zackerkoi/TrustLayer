@@ -36,6 +36,26 @@ def call_wsgi(app, method: str, path: str, body: dict | None = None):
     return captured["status"], json.loads(response.decode("utf-8"))
 
 
+def call_wsgi_text(app, method: str, path: str):
+    captured: dict[str, object] = {}
+
+    def start_response(status, headers):
+        captured["status"] = status
+        captured["headers"] = headers
+
+    environ = {
+        "REQUEST_METHOD": method,
+        "PATH_INFO": path,
+        "QUERY_STRING": path.partition("?")[2],
+        "CONTENT_LENGTH": "0",
+        "wsgi.input": io.BytesIO(b""),
+    }
+    if "?" in path:
+        environ["PATH_INFO"] = path.partition("?")[0]
+    response = b"".join(app(environ, start_response))
+    return captured["status"], response.decode("utf-8")
+
+
 class ControlPlaneIntegrationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -196,6 +216,114 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         self.assertGreater(forward["forwarded_count"], 0)
         self.assertGreater(consume["consumed_count"], 0)
         self.assertTrue(self.central_audit.timeline("sess_audit_http"))
+
+    def test_console_dashboard_page_renders_live_stats(self) -> None:
+        app = create_app(
+            self.service,
+            rule_management=self.rule_management,
+            policy_distribution=self.distribution,
+            control_store=self.control_store,
+            audit_forwarder=self.forwarder,
+            audit_consumer=self.consumer,
+        )
+        config_path = Path(__file__).resolve().parents[1] / "config" / "policy.example.json"
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+        published = self.rule_management.publish_bundle(
+            document=document,
+            created_by="secops@example.com",
+            change_summary="Dashboard seed bundle.",
+        )
+        self.rule_management.bind_tenant("tenant-dashboard", published["bundle_version"])
+        self.distribution.sync_tenant_bundle(tenant_id="tenant-dashboard", instance_id="gw-test-1")
+        self.service.check_egress(
+            tenant_id="tenant-dashboard",
+            session_id="sess_dashboard",
+            destination="https://review.example/api",
+            destination_type="webhook",
+            payload="contact alice@example.com",
+        )
+
+        status, html = call_wsgi_text(app, "GET", "/console/dashboard")
+        self.assertEqual(status, "200 OK")
+        self.assertIn("TrustLayer Control Console", html)
+        self.assertIn("Review Required", html)
+        self.assertIn("tenant-dashboard", html)
+        self.assertIn("gw-test-1", html)
+
+    def test_console_policies_page_lists_bundles_and_bindings(self) -> None:
+        app = create_app(
+            self.service,
+            rule_management=self.rule_management,
+            policy_distribution=self.distribution,
+            control_store=self.control_store,
+        )
+        config_path = Path(__file__).resolve().parents[1] / "config" / "policy.example.json"
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+        published = self.rule_management.publish_bundle(
+            document=document,
+            created_by="policy-admin@example.com",
+            change_summary="Policy page seed bundle.",
+        )
+        self.rule_management.bind_tenant("tenant-policy", published["bundle_version"])
+
+        status, html = call_wsgi_text(app, "GET", "/console/policies")
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Policy Bundles", html)
+        self.assertIn("policy-admin@example.com", html)
+        self.assertIn("tenant-policy", html)
+        self.assertIn(published["bundle_version"], html)
+
+    def test_console_distribution_page_filters_by_tenant(self) -> None:
+        app = create_app(
+            self.service,
+            rule_management=self.rule_management,
+            policy_distribution=self.distribution,
+            control_store=self.control_store,
+        )
+        config_path = Path(__file__).resolve().parents[1] / "config" / "policy.example.json"
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+        published = self.rule_management.publish_bundle(
+            document=document,
+            created_by="dist-admin@example.com",
+            change_summary="Distribution page seed bundle.",
+        )
+        self.rule_management.bind_tenant("tenant-dist-a", published["bundle_version"])
+        self.rule_management.bind_tenant("tenant-dist-b", published["bundle_version"])
+        self.distribution.sync_tenant_bundle(tenant_id="tenant-dist-a", instance_id="gw-test-1")
+        self.distribution.sync_tenant_bundle(tenant_id="tenant-dist-b", instance_id="gw-test-2")
+
+        status, html = call_wsgi_text(app, "GET", "/console/distribution?tenant_id=tenant-dist-a")
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Distribution", html)
+        self.assertIn("tenant-dist-a", html)
+        self.assertIn("gw-test-1", html)
+        self.assertNotIn("tenant-dist-b</td>", html)
+
+    def test_console_audit_page_renders_search_results(self) -> None:
+        app = create_app(
+            self.service,
+            rule_management=self.rule_management,
+            policy_distribution=self.distribution,
+            control_store=self.control_store,
+        )
+        self.service.check_egress(
+            tenant_id="tenant-audit-search",
+            session_id="sess_audit_search",
+            destination="https://audit-search.example/api",
+            destination_type="webhook",
+            payload="token AKIAIOSFODNN7EXAMPLE",
+        )
+
+        status, html = call_wsgi_text(
+            app,
+            "GET",
+            "/console/audit?tenant_id=tenant-audit-search&destination_host=audit-search.example",
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Audit Search", html)
+        self.assertIn("tenant-audit-search", html)
+        self.assertIn("audit-search.example", html)
+        self.assertIn("secret_detected", html)
 
     def test_postgres_control_plane_target_requires_psycopg_or_uses_postgres_backend(self) -> None:
         dsn = "postgresql://trustlayer:secret@localhost:5432/trustlayer"
