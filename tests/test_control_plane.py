@@ -250,7 +250,7 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         self.assertIn("tenant-dashboard", html)
         self.assertIn("gw-test-1", html)
 
-    def test_console_policies_page_lists_bundles_and_bindings(self) -> None:
+    def test_console_policies_page_lists_bundles_bindings_and_rule_details(self) -> None:
         app = create_app(
             self.service,
             rule_management=self.rule_management,
@@ -266,12 +266,17 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         )
         self.rule_management.bind_tenant("tenant-policy", published["bundle_version"])
 
-        status, html = call_wsgi_text(app, "GET", "/console/policies")
+        status, html = call_wsgi_text(app, "GET", "/console/policies?tenant_id=tenant-policy")
         self.assertEqual(status, "200 OK")
         self.assertIn("Policy Bundles", html)
         self.assertIn("policy-admin@example.com", html)
         self.assertIn("tenant-policy", html)
         self.assertIn(published["bundle_version"], html)
+        self.assertIn("Effective Rules", html)
+        self.assertIn("Detector Rules", html)
+        self.assertIn("Decision Rules", html)
+        self.assertIn("egress_secret_block_decision", html)
+        self.assertIn("ingress_hidden_content", html)
 
     def test_console_distribution_page_filters_by_tenant(self) -> None:
         app = create_app(

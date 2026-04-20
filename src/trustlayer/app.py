@@ -179,7 +179,7 @@ def create_app(
                 return _html_response(
                     start_response,
                     200,
-                    _render_console_policies_page(control_store),
+                    _render_console_policies_page(control_store, query),
                 )
 
             if method == "GET" and path == "/console/distribution":
@@ -466,9 +466,24 @@ def _render_console_dashboard_page(
     return _render_console_layout("Dashboard", body)
 
 
-def _render_console_policies_page(control_store: ControlPlaneStore | None) -> str:
+def _render_console_policies_page(
+    control_store: ControlPlaneStore | None,
+    query: dict[str, list[str]],
+) -> str:
     bundles = control_store.list_bundles(limit=20) if control_store is not None else []
     bindings = control_store.list_tenant_bindings(limit=50) if control_store is not None else []
+    selected_tenant = query.get("tenant_id", [""])[0] or ""
+    bundle_detail: dict[str, Any] | None = None
+    detail_error: str | None = None
+    if control_store is not None:
+        if not selected_tenant and bindings:
+            selected_tenant = str(bindings[0].get("tenant_id") or "")
+        if selected_tenant:
+            try:
+                resolved = control_store.resolve_bundle_for_tenant(selected_tenant)
+                bundle_detail = resolved.document
+            except KeyError:
+                detail_error = f"Tenant {selected_tenant} is not bound to a policy bundle."
     bundle_rows = _rows_or_empty(
         [
             (
@@ -493,10 +508,17 @@ def _render_console_policies_page(control_store: ControlPlaneStore | None) -> st
         ],
         columns=4,
     )
+    tenant_options = "".join(
+        f"<option value='{escape(str(item.get('tenant_id') or ''))}'"
+        f"{' selected' if str(item.get('tenant_id') or '') == selected_tenant else ''}>"
+        f"{escape(str(item.get('tenant_id') or ''))}</option>"
+        for item in bindings
+    )
+    detail_html = _render_policy_bundle_detail(selected_tenant, bundle_detail, detail_error)
     body = f"""
     <section class='hero'>
       <h1>Policies</h1>
-      <p>查看 bundle 版本、租户绑定和最近变更摘要。</p>
+      <p>查看 bundle 版本、租户绑定，以及某个租户当前生效的实际规则。</p>
     </section>
     <section class='panel'>
       <h2>Policy Bundles</h2>
@@ -511,6 +533,18 @@ def _render_console_policies_page(control_store: ControlPlaneStore | None) -> st
         <thead><tr><th>Tenant</th><th>Bundle</th><th>State</th><th>Updated</th></tr></thead>
         <tbody>{binding_rows}</tbody>
       </table>
+    </section>
+    <section class='panel'>
+      <h2>Effective Rules</h2>
+      <form class='filters' method='get' action='/console/policies'>
+        <label>Tenant
+          <select name='tenant_id'>
+            {tenant_options}
+          </select>
+        </label>
+        <button type='submit'>Load Rules</button>
+      </form>
+      {detail_html}
     </section>
     """
     return _render_console_layout("Policies", body)
@@ -654,11 +688,16 @@ def _render_console_layout(title: str, body: str) -> str:
       th {{ color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; }}
       .filters {{ display: flex; gap: 12px; flex-wrap: wrap; align-items: end; margin-bottom: 16px; }}
       .filters label {{ display: grid; gap: 6px; font-size: 13px; color: var(--muted); }}
-      .filters input {{ min-width: 170px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: white; }}
+      .filters input, .filters select {{ min-width: 170px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 12px; background: white; }}
       button {{ padding: 10px 14px; border: 1px solid #a7c3ff; border-radius: 12px; background: var(--accent-soft); color: #1e3a8a; cursor: pointer; }}
       .audit-filters input {{ min-width: 140px; }}
+      .rule-stack {{ display: grid; gap: 18px; }}
+      .rule-subgrid {{ display: grid; grid-template-columns: 1fr 1fr; gap: 18px; }}
+      .hint {{ color: var(--muted); font-size: 14px; }}
+      code {{ background: #f2eadc; padding: 2px 6px; border-radius: 8px; }}
       @media (max-width: 900px) {{
         .grid.two-up {{ grid-template-columns: 1fr; }}
+        .rule-subgrid {{ grid-template-columns: 1fr; }}
         .topbar {{ align-items: start; flex-direction: column; }}
       }}
     </style>
@@ -691,3 +730,112 @@ def _rows_or_empty(rows: list[tuple[Any, ...]], *, columns: int) -> str:
         "<tr>" + "".join(f"<td>{escape(str(value or ''))}</td>" for value in row) + "</tr>"
         for row in rows
     )
+
+
+def _render_policy_bundle_detail(
+    tenant_id: str,
+    document: dict[str, Any] | None,
+    error: str | None,
+) -> str:
+    if error:
+        return f"<p class='hint'>{escape(error)}</p>"
+    if not document:
+        return "<p class='hint'>Pick a tenant to view its currently effective rule bundle.</p>"
+
+    settings = document.get("settings", {})
+    source_policies = document.get("source_policies", [])
+    detector_rules = document.get("detector_rules", [])
+    decision_rules = document.get("decision_rules", [])
+    approval_summary_rules = document.get("approval_summary_rules", {})
+
+    settings_rows = _rows_or_empty(
+        [(key, json.dumps(value, ensure_ascii=True, sort_keys=True)) for key, value in sorted(settings.items())],
+        columns=2,
+    )
+    source_rows = _rows_or_empty(
+        [
+            (
+                item.get("source_type", ""),
+                item.get("trust_level", ""),
+                item.get("extractor_kind", ""),
+                ", ".join(item.get("static_risk_flags", []) or []),
+            )
+            for item in source_policies
+        ],
+        columns=4,
+    )
+    detector_rows = _rows_or_empty(
+        [
+            (
+                item.get("rule_id", ""),
+                item.get("direction", ""),
+                item.get("detector_kind", ""),
+                item.get("flag_name", ""),
+                item.get("policy_id", ""),
+                item.get("decision", ""),
+            )
+            for item in detector_rules
+        ],
+        columns=6,
+    )
+    decision_rows = _rows_or_empty(
+        [
+            (
+                item.get("rule_id", ""),
+                item.get("direction", ""),
+                item.get("decision", ""),
+                ", ".join(item.get("when_any_flags", []) or []),
+                item.get("event_type", ""),
+                item.get("priority", ""),
+            )
+            for item in decision_rules
+        ],
+        columns=6,
+    )
+    summary_rows = _rows_or_empty(
+        [(flag, text) for flag, text in sorted(approval_summary_rules.items())],
+        columns=2,
+    )
+    bundle_version = settings.get("policy_bundle_version", "unknown")
+    return f"""
+    <div class='rule-stack'>
+      <p class='hint'>Tenant <code>{escape(tenant_id)}</code> is currently running bundle <code>{escape(str(bundle_version))}</code>.</p>
+      <div class='rule-subgrid'>
+        <div>
+          <h3>Settings</h3>
+          <table>
+            <thead><tr><th>Key</th><th>Value</th></tr></thead>
+            <tbody>{settings_rows}</tbody>
+          </table>
+        </div>
+        <div>
+          <h3>Approval Summary Rules</h3>
+          <table>
+            <thead><tr><th>Flag</th><th>Summary</th></tr></thead>
+            <tbody>{summary_rows}</tbody>
+          </table>
+        </div>
+      </div>
+      <div>
+        <h3>Source Policies</h3>
+        <table>
+          <thead><tr><th>Source Type</th><th>Trust Level</th><th>Extractor</th><th>Static Flags</th></tr></thead>
+          <tbody>{source_rows}</tbody>
+        </table>
+      </div>
+      <div>
+        <h3>Detector Rules</h3>
+        <table>
+          <thead><tr><th>Rule ID</th><th>Direction</th><th>Kind</th><th>Flag</th><th>Policy ID</th><th>Decision</th></tr></thead>
+          <tbody>{detector_rows}</tbody>
+        </table>
+      </div>
+      <div>
+        <h3>Decision Rules</h3>
+        <table>
+          <thead><tr><th>Rule ID</th><th>Direction</th><th>Decision</th><th>When Any Flags</th><th>Event Type</th><th>Priority</th></tr></thead>
+          <tbody>{decision_rows}</tbody>
+        </table>
+      </div>
+    </div>
+    """
