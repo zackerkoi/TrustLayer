@@ -1,0 +1,181 @@
+from __future__ import annotations
+
+import json
+from html import escape
+from urllib.parse import parse_qs
+from typing import Any, Callable, Iterable
+
+from .service import DefenseGatewayService
+
+
+StartResponse = Callable[[str, list[tuple[str, str]]], None]
+
+
+def create_app(service: DefenseGatewayService):
+    def app(environ: dict[str, Any], start_response: StartResponse) -> Iterable[bytes]:
+        method = environ.get("REQUEST_METHOD", "GET").upper()
+        path = environ.get("PATH_INFO", "/")
+        query = parse_qs(environ.get("QUERY_STRING", ""))
+
+        try:
+            if method == "GET" and path == "/healthz":
+                return _json_response(start_response, 200, {"status": "ok"})
+
+            if method == "POST" and path == "/v1/ingress/sanitize":
+                body = _read_json_body(environ)
+                result = service.sanitize_ingress(
+                    tenant_id=body["tenant_id"],
+                    session_id=body["session_id"],
+                    source_type=body["source_type"],
+                    origin=body["origin"],
+                    content=body["content"],
+                )
+                return _json_response(
+                    start_response,
+                    200,
+                    {
+                        "request_id": result.request_id,
+                        "decision": result.decision,
+                        "risk_flags": result.risk_flags,
+                        "matched_policies": result.matched_policies,
+                        "sanitized_content": result.payload,
+                    },
+                )
+
+            if method == "POST" and path == "/v1/egress/check":
+                body = _read_json_body(environ)
+                result = service.check_egress(
+                    tenant_id=body["tenant_id"],
+                    session_id=body["session_id"],
+                    destination=body["destination"],
+                    destination_type=body["destination_type"],
+                    payload=body["payload"],
+                )
+                return _json_response(
+                    start_response,
+                    200,
+                    {
+                        "request_id": result.request_id,
+                        "decision": result.decision,
+                        "risk_flags": result.risk_flags,
+                        "matched_policies": result.matched_policies,
+                    },
+                )
+
+            if method == "GET" and path.startswith("/v1/sessions/") and path.endswith("/timeline"):
+                session_id = path.split("/")[3]
+                return _json_response(
+                    start_response,
+                    200,
+                    {"session_id": session_id, "events": service.timeline(session_id)},
+                )
+
+            if method == "GET" and path == "/v1/approvals/queue":
+                tenant_id = query["tenant_id"][0]
+                limit = int(query.get("limit", ["20"])[0])
+                return _json_response(
+                    start_response,
+                    200,
+                    {
+                        "tenant_id": tenant_id,
+                        "items": service.approval_queue(tenant_id, limit=limit),
+                    },
+                )
+
+            if method == "GET" and path == "/approvals/queue":
+                tenant_id = query["tenant_id"][0]
+                limit = int(query.get("limit", ["20"])[0])
+                items = service.approval_queue(tenant_id, limit=limit)
+                return _html_response(
+                    start_response,
+                    200,
+                    _render_approval_queue_page(tenant_id, items),
+                )
+
+            return _json_response(start_response, 404, {"error": "not_found"})
+        except KeyError as exc:
+            return _json_response(
+                start_response,
+                400,
+                {"error": "missing_field", "field": str(exc)},
+            )
+        except json.JSONDecodeError:
+            return _json_response(start_response, 400, {"error": "invalid_json"})
+
+    return app
+
+
+def _read_json_body(environ: dict[str, Any]) -> dict[str, Any]:
+    length = int(environ.get("CONTENT_LENGTH") or "0")
+    raw = environ["wsgi.input"].read(length) if length else b"{}"
+    return json.loads(raw.decode("utf-8"))
+
+
+def _json_response(start_response: StartResponse, status_code: int, payload: dict[str, Any]):
+    body = json.dumps(payload, ensure_ascii=True).encode("utf-8")
+    start_response(
+        f"{status_code} {'OK' if status_code < 400 else 'ERROR'}",
+        [("Content-Type", "application/json"), ("Content-Length", str(len(body)))],
+    )
+    return [body]
+
+
+def _html_response(start_response: StartResponse, status_code: int, body: str):
+    payload = body.encode("utf-8")
+    start_response(
+        f"{status_code} {'OK' if status_code < 400 else 'ERROR'}",
+        [("Content-Type", "text/html; charset=utf-8"), ("Content-Length", str(len(payload)))],
+    )
+    return [payload]
+
+
+def _render_approval_queue_page(tenant_id: str, items: list[dict[str, Any]]) -> str:
+    rows = []
+    for item in items:
+        risk_flags = ", ".join(item.get("risk_flags") or []) or "none"
+        rows.append(
+            "<tr>"
+            f"<td>{escape(item.get('decision') or '')}</td>"
+            f"<td>{escape(item.get('destination_host') or '')}</td>"
+            f"<td>{escape(item.get('approval_summary') or item.get('summary') or '')}</td>"
+            f"<td>{escape(risk_flags)}</td>"
+            f"<td>{escape(item.get('session_id') or '')}</td>"
+            "</tr>"
+        )
+
+    rows_html = "\n".join(rows) if rows else "<tr><td colspan='5'>No pending approvals.</td></tr>"
+    return f"""<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Approval Queue</title>
+    <style>
+      body {{ font-family: -apple-system, BlinkMacSystemFont, sans-serif; margin: 32px; color: #111827; }}
+      h1 {{ margin-bottom: 8px; }}
+      p {{ color: #4b5563; }}
+      table {{ width: 100%; border-collapse: collapse; margin-top: 24px; }}
+      th, td {{ border: 1px solid #d1d5db; padding: 10px 12px; text-align: left; vertical-align: top; }}
+      th {{ background: #f3f4f6; }}
+      .decision-block {{ color: #991b1b; font-weight: 700; }}
+      .decision-review_required {{ color: #92400e; font-weight: 700; }}
+    </style>
+  </head>
+  <body>
+    <h1>Approval Queue</h1>
+    <p>Tenant: {escape(tenant_id)}</p>
+    <table>
+      <thead>
+        <tr>
+          <th>Decision</th>
+          <th>Destination</th>
+          <th>Approval Summary</th>
+          <th>Risk Flags</th>
+          <th>Session</th>
+        </tr>
+      </thead>
+      <tbody>
+        {rows_html}
+      </tbody>
+    </table>
+  </body>
+</html>"""

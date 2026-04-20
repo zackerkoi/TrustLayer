@@ -1,0 +1,7 @@
+{
+  "ingress_oversized_threshold": 600,
+  "egress_oversized_threshold": 500,
+  "allowed_destination_hosts": [
+    "safe.example"
+  ]
+}

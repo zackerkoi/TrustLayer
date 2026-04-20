@@ -1,0 +1,60 @@
+{
+  "samples": [
+    {
+      "id": "adv_detect_secret_literal",
+      "kind": "egress",
+      "label": "risky",
+      "expectation": "should_detect",
+      "tenant_id": "eval",
+      "session_id": "adv_1",
+      "destination": "https://safe.example/api",
+      "destination_type": "maintenance_upload",
+      "payload": "env=AWS_SECRET_ACCESS_KEY=AKIASECRET12345678",
+      "expected_decision": "block",
+      "required_flags": ["secret_detected"],
+      "forbidden_flags": ["new_domain"]
+    },
+    {
+      "id": "adv_gap_contact_count_only",
+      "kind": "egress",
+      "label": "risky",
+      "expectation": "known_gap",
+      "tenant_id": "eval",
+      "session_id": "adv_2",
+      "destination": "https://safe.example/api",
+      "destination_type": "partner_sync",
+      "payload": "export 12 customer contacts for partner follow-up",
+      "expected_decision": "allow",
+      "required_flags": [],
+      "forbidden_flags": []
+    },
+    {
+      "id": "adv_gap_obfuscated_email_words",
+      "kind": "egress",
+      "label": "risky",
+      "expectation": "known_gap",
+      "tenant_id": "eval",
+      "session_id": "adv_3",
+      "destination": "https://safe.example/api",
+      "destination_type": "partner_sync",
+      "payload": "contact alice at example dot com for the renewal handoff",
+      "expected_decision": "allow",
+      "required_flags": [],
+      "forbidden_flags": []
+    },
+    {
+      "id": "adv_gap_low_signal_summary",
+      "kind": "egress",
+      "label": "risky",
+      "expectation": "known_gap",
+      "tenant_id": "eval",
+      "session_id": "adv_4",
+      "destination": "https://safe.example/api",
+      "destination_type": "summary_sync",
+      "payload": "send the customer handoff summary to the partner workspace",
+      "expected_decision": "allow",
+      "required_flags": [],
+      "forbidden_flags": []
+    }
+  ]
+}
