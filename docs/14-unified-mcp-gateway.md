@@ -242,14 +242,15 @@ class ToolDescriptor:
 
 ## 当前边界
 
-这份文档原本是设计稿，但现在第一步已经落进代码了：
+这份文档原本是设计稿，但现在前两步已经落进代码了：
 
 - `ToolDescriptor` 已经进入 [mcp_gateway.py](../src/trustlayer/mcp_gateway.py)
 - `/v1/mcp/tools` 现在会暴露 `direction / trust_tier / source_type / destination_type`
-- 当前 `fetch` 仍然只允许 `ingress` 工具
-- `egress` 工具已经可以先注册进统一 registry，但会被显式拒绝走 ingress fetch 路径
+- `/v1/mcp/invoke` 已经可以统一调用 `ingress` 和 `egress` 工具
+- 当前 `fetch` 仍然只允许 `ingress` 工具，作为兼容入口保留
+- `egress` 工具已经能通过 unified invoke 进入 egress pipeline
 
-也就是说，**统一底座已经开始成形，但 unified invoke 还没落地。**
+也就是说，**统一底座和 unified invoke 都已经开始成形，但底层策略引擎还没有完全收口。**
 
 当前 TrustLayer 仍然是：
 
@@ -260,7 +261,8 @@ class ToolDescriptor:
 所以这篇现在的价值是两层：
 
 1. 解释为什么要统一
-2. 记录“统一 registry，策略仍分流”这第一步已经怎么落地
+2. 记录“统一 registry，策略仍分流”第一步怎么落地
+3. 记录“统一 invoke，共享 request_id 审计链”第二步怎么落地
 
 它还不是在宣布“已经统一完成”，而是在明确：
 
@@ -268,7 +270,7 @@ class ToolDescriptor:
 
 ## 下一步演进
 
-1. 把 `ToolDescriptor` 和 direction-aware registry 落进代码
-2. 把现有 `egress check` 包进 unified broker
-3. 统一 tool-level 审计字段
-4. 再决定是否把 HTTP 接口收口成 `POST /v1/mcp/invoke`
+1. 继续把更多 egress 动作收进 unified broker
+2. 让 `fetch` 逐步退成兼容入口，主路径转向 `invoke`
+3. 统一更多 tool-level 审计字段和审批视图
+4. 再决定是否把 HTTP 接口彻底收口到 `POST /v1/mcp/invoke`

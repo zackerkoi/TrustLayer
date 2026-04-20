@@ -121,6 +121,19 @@ def create_app(
                 )
                 return _json_response(start_response, 200, result)
 
+            if method == "POST" and path == "/v1/mcp/invoke":
+                if mcp_gateway is None:
+                    return _json_response(start_response, 404, {"error": "mcp_gateway_disabled"})
+                body = _read_json_body(environ)
+                result = mcp_gateway.invoke_tool(
+                    tenant_id=body["tenant_id"],
+                    session_id=body["session_id"],
+                    tool_name=body["tool_name"],
+                    direction=body["direction"],
+                    arguments=body.get("arguments", {}),
+                )
+                return _json_response(start_response, 200, result)
+
             return _json_response(start_response, 404, {"error": "not_found"})
         except KeyError as exc:
             return _json_response(

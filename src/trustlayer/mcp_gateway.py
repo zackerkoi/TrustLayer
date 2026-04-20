@@ -235,16 +235,37 @@ class MCPGatewayService:
         tool_name: str,
         arguments: dict[str, Any],
     ) -> dict[str, Any]:
+        return self.invoke_tool(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            tool_name=tool_name,
+            direction="ingress",
+            arguments=arguments,
+        )
+
+    def invoke_tool(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        tool_name: str,
+        direction: str,
+        arguments: dict[str, Any],
+    ) -> dict[str, Any]:
         tool = self._tools.get(tool_name)
         if tool is None:
             raise ToolNotFoundError(tool_name)
         spec = tool.spec()
-        if spec.direction != "ingress":
-            raise ToolDirectionNotSupportedError(
-                f"{tool_name}:{spec.direction}"
-            )
+        if spec.direction != direction:
+            raise ToolDirectionNotSupportedError(f"{tool_name}:{spec.direction}")
 
         request_id = f"mcpreq_{uuid.uuid4().hex[:12]}"
+        audit_metadata = {
+            "tool_name": tool_name,
+            "direction": spec.direction,
+            "trust_tier": spec.trust_tier,
+            "tool_tags": list(spec.tags),
+        }
         self.defense.audit.append_event(
             session_id=session_id,
             request_id=request_id,
@@ -252,12 +273,20 @@ class MCPGatewayService:
             event_type="mcp_tool_invoked",
             summary=f"MCP gateway invoked {tool_name}",
             metadata={
-                "tool_name": tool_name,
+                **audit_metadata,
                 "arguments": arguments,
-                "direction": spec.direction,
-                "trust_tier": spec.trust_tier,
             },
         )
+
+        if spec.direction == "egress":
+            return self._invoke_egress_tool(
+                tenant_id=tenant_id,
+                session_id=session_id,
+                request_id=request_id,
+                spec=spec,
+                arguments=arguments,
+                audit_metadata=audit_metadata,
+            )
 
         tool_result = tool.fetch(arguments)
         self.defense.audit.append_event(
@@ -267,8 +296,7 @@ class MCPGatewayService:
             event_type="mcp_tool_result",
             summary=f"MCP gateway received {tool_name} result",
             metadata={
-                "tool_name": tool_name,
-                "direction": spec.direction,
+                **audit_metadata,
                 "source_type": tool_result.source_type,
                 "origin": tool_result.origin,
                 "result_metadata": tool_result.metadata,
@@ -281,6 +309,8 @@ class MCPGatewayService:
             source_type=tool_result.source_type,
             origin=tool_result.origin,
             content=tool_result.content,
+            request_id=request_id,
+            audit_metadata=audit_metadata,
         )
         return {
             "request_id": request_id,
@@ -305,9 +335,79 @@ class MCPGatewayService:
             "sanitized_content": sanitized.payload,
         }
 
+    def _invoke_egress_tool(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        request_id: str,
+        spec: ToolDescriptor,
+        arguments: dict[str, Any],
+        audit_metadata: dict[str, Any],
+    ) -> dict[str, Any]:
+        destination = str(arguments["destination"])
+        payload = str(arguments["payload"])
+        destination_type = spec.destination_type or str(arguments.get("destination_type", "external"))
+        self.defense.audit.append_event(
+            session_id=session_id,
+            request_id=request_id,
+            tenant_id=tenant_id,
+            event_type="mcp_tool_routed",
+            summary=f"MCP gateway routed {spec.name} to egress pipeline",
+            metadata={
+                **audit_metadata,
+                "destination": destination,
+                "destination_type": destination_type,
+            },
+        )
+        decision = self.defense.check_egress(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            destination=destination,
+            destination_type=destination_type,
+            payload=payload,
+            request_id=request_id,
+            audit_metadata=audit_metadata,
+        )
+        return {
+            "request_id": request_id,
+            "tool_name": spec.name,
+            "tool": {
+                "name": spec.name,
+                "direction": spec.direction,
+                "trust_tier": spec.trust_tier,
+                "source_type": spec.source_type,
+                "destination_type": spec.destination_type,
+                "tags": list(spec.tags),
+            },
+            "arguments": arguments,
+            "decision": decision.decision,
+            "risk_flags": decision.risk_flags,
+            "matched_policies": decision.matched_policies,
+            "egress": decision.payload,
+        }
+
 
 def build_default_mcp_gateway(defense_service: DefenseGatewayService) -> MCPGatewayService:
     return MCPGatewayService(
         defense_service,
-        tools=[RemoteWebFetchAdapter(), RemoteJSONRAGAdapter()],
+        tools=[
+            RemoteWebFetchAdapter(),
+            RemoteJSONRAGAdapter(),
+            CallableMCPToolAdapter(
+                name="webhook_post",
+                description="Routes outbound webhook payloads through TrustLayer egress policy.",
+                source_type="internal",
+                direction="egress",
+                trust_tier="trusted",
+                destination_type="webhook",
+                tags=("egress", "webhook"),
+                handler=lambda arguments: MCPToolResult(
+                    source_type="internal",
+                    origin=f"egress://{arguments.get('destination', 'unknown')}",
+                    content=str(arguments.get("payload", "")),
+                    metadata={"destination": arguments.get("destination")},
+                ),
+            ),
+        ],
     )

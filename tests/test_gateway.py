@@ -549,6 +549,45 @@ class GatewayScenariosTest(unittest.TestCase):
                 "source_sanitized",
             ],
         )
+        request_ids = {event["request_id"] for event in self.service.timeline("sess_mcp_gateway")}
+        self.assertEqual(len(request_ids), 1)
+
+    def test_mcp_gateway_invoke_unifies_ingress_under_one_request_id(self) -> None:
+        app = create_app(self.service, mcp_gateway=make_mcp_gateway(self.service))
+
+        status, body = call_wsgi(
+            app,
+            "POST",
+            "/v1/mcp/invoke",
+            {
+                "tenant_id": "demo",
+                "session_id": "sess_mcp_invoke_ingress",
+                "tool_name": "web_search",
+                "direction": "ingress",
+                "arguments": {"query": "supplier-risk"},
+            },
+        )
+
+        self.assertTrue(str(status).startswith("200"))
+        self.assertEqual(body["tool"]["direction"], "ingress")
+        self.assertEqual(body["decision"], "allow_sanitized")
+        self.assertIn("hidden_content", body["risk_flags"])
+        timeline = self.service.timeline("sess_mcp_invoke_ingress")
+        self.assertEqual(
+            [event["event_type"] for event in timeline],
+            [
+                "mcp_tool_invoked",
+                "mcp_tool_result",
+                "source_received",
+                "policy_matched",
+                "source_sanitized",
+            ],
+        )
+        request_ids = {event["request_id"] for event in timeline}
+        self.assertEqual(request_ids, {body["request_id"]})
+        for event in timeline:
+            self.assertEqual(event["metadata"]["tool_name"], "web_search")
+            self.assertEqual(event["metadata"]["direction"], "ingress")
 
     def test_mcp_gateway_returns_unknown_tool_error(self) -> None:
         app = create_app(self.service, mcp_gateway=make_mcp_gateway(self.service))
@@ -591,6 +630,51 @@ class GatewayScenariosTest(unittest.TestCase):
         self.assertEqual(body["error"], "unsupported_tool_direction")
         self.assertEqual(body["tool_name"], "webhook_post")
         self.assertEqual(body["direction"], "egress")
+
+    def test_mcp_gateway_invoke_routes_egress_tool_through_egress_pipeline(self) -> None:
+        app = create_app(self.service, mcp_gateway=make_mcp_gateway(self.service))
+
+        status, body = call_wsgi(
+            app,
+            "POST",
+            "/v1/mcp/invoke",
+            {
+                "tenant_id": "demo",
+                "session_id": "sess_mcp_invoke_egress",
+                "tool_name": "webhook_post",
+                "direction": "egress",
+                "arguments": {
+                    "destination": "https://new-destination.example/hooks",
+                    "payload": "Contact alice@example.com for the next update.",
+                },
+            },
+        )
+
+        self.assertTrue(str(status).startswith("200"))
+        self.assertEqual(body["tool"]["direction"], "egress")
+        self.assertEqual(body["decision"], "review_required")
+        self.assertIn("pii_detected", body["risk_flags"])
+        self.assertIn("new_domain", body["risk_flags"])
+        self.assertEqual(body["egress"]["destination_type"], "webhook")
+        timeline = self.service.timeline("sess_mcp_invoke_egress")
+        self.assertEqual(
+            [event["event_type"] for event in timeline],
+            [
+                "mcp_tool_invoked",
+                "mcp_tool_routed",
+                "egress_attempted",
+                "destination_new_domain",
+                "egress_scanned",
+                "policy_matched",
+                "policy_matched",
+                "egress_review_required",
+            ],
+        )
+        request_ids = {event["request_id"] for event in timeline}
+        self.assertEqual(request_ids, {body["request_id"]})
+        for event in timeline:
+            self.assertEqual(event["metadata"]["tool_name"], "webhook_post")
+            self.assertEqual(event["metadata"]["direction"], "egress")
 
     def test_remote_web_fetch_adapter_sanitizes_live_http_source(self) -> None:
         with LiveHTTPFixture() as fixture:

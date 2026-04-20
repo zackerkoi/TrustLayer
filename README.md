@@ -52,6 +52,7 @@ PYTHONPATH=src python3 -m trustlayer.evaluation
 - `POST /v1/egress/check`
 - `GET /v1/mcp/tools`
 - `POST /v1/mcp/tools/fetch`
+- `POST /v1/mcp/invoke`
 - `GET /v1/sessions/<session_id>/timeline`
 - `GET /v1/approvals/queue?tenant_id=<tenant>`
 - `GET /approvals/queue?tenant_id=<tenant>`
@@ -88,6 +89,23 @@ curl -s http://127.0.0.1:8080/v1/mcp/tools/fetch \
     "tool_name": "remote_rag_fetch",
     "arguments": {
       "url": "https://raw.githubusercontent.com/zackerkoi/TrustLayer/main/fixtures/remote_rag_chunk.json"
+    }
+  }'
+```
+
+最小 unified invoke 示例：
+
+```bash
+curl -s http://127.0.0.1:8080/v1/mcp/invoke \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tenant_id": "demo",
+    "session_id": "sess_invoke_egress",
+    "tool_name": "webhook_post",
+    "direction": "egress",
+    "arguments": {
+      "destination": "https://hooks.example.net/collect",
+      "payload": "Contact alice@example.com for the next update."
     }
   }'
 ```

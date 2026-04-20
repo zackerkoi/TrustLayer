@@ -49,15 +49,20 @@ class DefenseGatewayService:
         source_type: str,
         origin: str,
         content: str,
+        request_id: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ) -> DecisionResult:
-        request_id = self._request_id()
+        request_id = request_id or self._request_id()
         self.audit.append_event(
             session_id=session_id,
             request_id=request_id,
             tenant_id=tenant_id,
             event_type="source_received",
             summary=f"Received {source_type} from {origin}",
-            metadata={"source_type": source_type, "origin": origin},
+            metadata=self._merge_audit_metadata(
+                {"source_type": source_type, "origin": origin},
+                audit_metadata,
+            ),
         )
 
         visible_text, removed_regions = self._sanitize_content(source_type, content)
@@ -90,7 +95,10 @@ class DefenseGatewayService:
             decision="allow_sanitized",
             policy_id=matched_policies[0],
             summary="Ingress sanitized by default policy",
-            metadata={"matched_policies": matched_policies},
+            metadata=self._merge_audit_metadata(
+                {"matched_policies": matched_policies},
+                audit_metadata,
+            ),
         )
         self.audit.append_event(
             session_id=session_id,
@@ -99,13 +107,16 @@ class DefenseGatewayService:
             event_type="source_sanitized",
             decision="allow_sanitized",
             summary=f"Sanitized {source_type}",
-            metadata={
-                "source_type": source_type,
-                "origin": origin,
-                "removed_regions": removed_regions,
-                "risk_flags": risk_flags,
-                "content_hash": self._hash(visible_text),
-            },
+            metadata=self._merge_audit_metadata(
+                {
+                    "source_type": source_type,
+                    "origin": origin,
+                    "removed_regions": removed_regions,
+                    "risk_flags": risk_flags,
+                    "content_hash": self._hash(visible_text),
+                },
+                audit_metadata,
+            ),
         )
         return DecisionResult(
             request_id=request_id,
@@ -123,8 +134,10 @@ class DefenseGatewayService:
         destination: str,
         destination_type: str,
         payload: str,
+        request_id: str | None = None,
+        audit_metadata: dict[str, Any] | None = None,
     ) -> DecisionResult:
-        request_id = self._request_id()
+        request_id = request_id or self._request_id()
         destination_host = (urlparse(destination).hostname or destination).lower()
         self.audit.append_event(
             session_id=session_id,
@@ -132,11 +145,14 @@ class DefenseGatewayService:
             tenant_id=tenant_id,
             event_type="egress_attempted",
             summary=f"Attempted egress to {destination_host}",
-            metadata={
-                "destination": destination,
-                "destination_host": destination_host,
-                "destination_type": destination_type,
-            },
+            metadata=self._merge_audit_metadata(
+                {
+                    "destination": destination,
+                    "destination_host": destination_host,
+                    "destination_type": destination_type,
+                },
+                audit_metadata,
+            ),
         )
 
         risk_flags: list[str] = []
@@ -165,7 +181,10 @@ class DefenseGatewayService:
                 tenant_id=tenant_id,
                 event_type="destination_new_domain",
                 summary=f"First-time destination {destination_host}",
-                metadata={"destination_host": destination_host},
+                metadata=self._merge_audit_metadata(
+                    {"destination_host": destination_host},
+                    audit_metadata,
+                ),
             )
 
         decision = "allow"
@@ -181,11 +200,14 @@ class DefenseGatewayService:
             event_type="egress_scanned",
             decision=decision,
             summary="Egress payload scanned",
-            metadata={
-                "risk_flags": risk_flags,
-                "destination_host": destination_host,
-                "content_hash": self._hash(payload),
-            },
+            metadata=self._merge_audit_metadata(
+                {
+                    "risk_flags": risk_flags,
+                    "destination_host": destination_host,
+                    "content_hash": self._hash(payload),
+                },
+                audit_metadata,
+            ),
         )
         for policy_id in matched_policies:
             self.audit.append_event(
@@ -196,7 +218,10 @@ class DefenseGatewayService:
                 decision=decision,
                 policy_id=policy_id,
                 summary=f"Matched {policy_id}",
-                metadata={"destination_host": destination_host},
+                metadata=self._merge_audit_metadata(
+                    {"destination_host": destination_host},
+                    audit_metadata,
+                ),
             )
 
         final_event = {
@@ -216,11 +241,14 @@ class DefenseGatewayService:
             event_type=final_event,
             decision=decision,
             summary=f"Egress decision: {decision}",
-            metadata={
-                "destination_host": destination_host,
-                "risk_flags": risk_flags,
-                "approval_summary": approval_summary,
-            },
+            metadata=self._merge_audit_metadata(
+                {
+                    "destination_host": destination_host,
+                    "risk_flags": risk_flags,
+                    "approval_summary": approval_summary,
+                },
+                audit_metadata,
+            ),
         )
         return DecisionResult(
             request_id=request_id,
@@ -321,3 +349,14 @@ class DefenseGatewayService:
         reason_text = ", ".join(reasons) if reasons else "risk conditions matched"
         prefix = "Blocked" if decision == "block" else "Review required"
         return f"{prefix}: outbound request to {destination_host} {reason_text}."
+
+    def _merge_audit_metadata(
+        self,
+        base: dict[str, Any],
+        extra: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        if not extra:
+            return base
+        merged = dict(extra)
+        merged.update(base)
+        return merged

@@ -115,12 +115,21 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 
 - `GET /v1/mcp/tools`
 - `POST /v1/mcp/tools/fetch`
+- `POST /v1/mcp/invoke`
 
 `fetch` 请求体最小字段：
 
 - `tenant_id`
 - `session_id`
 - `tool_name`
+- `arguments`
+
+`invoke` 在当前版本里是更通用的统一入口，请求体最小字段是：
+
+- `tenant_id`
+- `session_id`
+- `tool_name`
+- `direction`
 - `arguments`
 
 ## 验证测试设计
@@ -142,11 +151,19 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 
 - `test_mcp_gateway_lists_registered_tools`
 - `test_mcp_gateway_fetch_sanitizes_tool_output_and_records_mcp_audit_events`
+- `test_mcp_gateway_invoke_unifies_ingress_under_one_request_id`
+- `test_mcp_gateway_invoke_routes_egress_tool_through_egress_pipeline`
 - `test_mcp_gateway_returns_unknown_tool_error`
 - `test_remote_web_fetch_adapter_sanitizes_live_http_source`
 - `test_remote_rag_fetch_adapter_pulls_live_json_and_marks_risk_signals`
 
-其中最后一条不是只喂一段本地字符串，而是：
+其中新增的统一 invoke 验证有两个关键点：
+
+- `ingress` 工具现在可以走 `/v1/mcp/invoke`
+- `egress` 工具现在也可以走 `/v1/mcp/invoke`
+- 同一次工具调用下，`mcp_tool_invoked` 和后续 ingress / egress 决策事件会共用同一个 `request_id`
+
+另外，remote 验证不是只喂一段本地字符串，而是：
 
 - 启一个真实 HTTP fixture
 - 用 `remote_web_fetch` 拉取页面
@@ -186,6 +203,8 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 - 输入治理可以前移到工具获取层
 - 审计不只记录输入进入，还能记录“是谁拉来的”
 - 入口层已经不只是 mock adapter，而是能跑真实 remote fetch
+- 统一 broker 已经开始落地，ingress 和 egress 可以共用一个 invoke 入口
+- 同一次工具调用已经能围绕共享 `request_id` 留下更完整的审计链
 
 ## 当前限制
 
