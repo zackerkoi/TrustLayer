@@ -56,6 +56,20 @@ PYTHONPATH=src python3 -m trustlayer.main \
 pip install '.[postgres]'
 ```
 
+本地拉起 PostgreSQL 并跑一遍控制面真库集成测试：
+
+```bash
+cd TrustLayer
+bash scripts/test-control-plane-postgres.sh
+```
+
+这个脚本会：
+
+- 启动 [docker-compose.postgres.yml](docker-compose.postgres.yml)
+- 安装 `.[postgres]`
+- 设置 `TRUSTLAYER_TEST_POSTGRES_DSN`
+- 运行 `ControlPlanePostgresIntegrationTest`
+
 运行测试：
 
 ```bash

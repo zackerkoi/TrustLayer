@@ -1,0 +1,20 @@
+services:
+  trustlayer-postgres:
+    image: postgres:16-alpine
+    container_name: trustlayer-postgres
+    environment:
+      POSTGRES_DB: trustlayer
+      POSTGRES_USER: trustlayer
+      POSTGRES_PASSWORD: trustlayer
+    ports:
+      - "55432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U trustlayer -d trustlayer"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    volumes:
+      - trustlayer-postgres-data:/var/lib/postgresql/data
+
+volumes:
+  trustlayer-postgres-data:

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
@@ -207,6 +208,56 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
             control_plane._PostgresControlPlaneBackend = original
 
         self.assertEqual(store.backend_kind, "postgresql")
+
+
+@unittest.skipUnless(
+    os.environ.get("TRUSTLAYER_TEST_POSTGRES_DSN"),
+    "Set TRUSTLAYER_TEST_POSTGRES_DSN to run live PostgreSQL control plane tests.",
+)
+class ControlPlanePostgresIntegrationTest(unittest.TestCase):
+    def setUp(self) -> None:
+        if control_plane.psycopg is None:
+            self.skipTest("psycopg is not installed")
+        dsn = os.environ["TRUSTLAYER_TEST_POSTGRES_DSN"]
+        self.temp_dir = tempfile.TemporaryDirectory()
+        base = Path(self.temp_dir.name)
+        self.local_db = base / "local.sqlite3"
+        self.local_audit = AuditStore(self.local_db)
+        self.local_policy = PolicyStore(self.local_db)
+        self.control_store = ControlPlaneStore(dsn)
+        self.rule_management = RuleManagementService(self.control_store)
+        self.distribution = PolicyDistributionService(self.control_store, self.local_policy)
+
+    def tearDown(self) -> None:
+        self.temp_dir.cleanup()
+
+    def test_live_postgres_publish_bind_and_sync(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "config" / "policy.example.json"
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+        document["settings"]["allowed_destination_hosts"] = ["postgres-live.example"]
+
+        published = self.rule_management.publish_bundle(
+            document=document,
+            created_by="postgres-test@example.com",
+            change_summary="Live PostgreSQL integration test.",
+        )
+        tenant_id = f"tenant-pg-{published['bundle_version'][-6:]}"
+        instance_id = f"gw-pg-{published['bundle_version'][-6:]}"
+
+        self.rule_management.bind_tenant(tenant_id, published["bundle_version"])
+        synced = self.distribution.sync_tenant_bundle(
+            tenant_id=tenant_id,
+            instance_id=instance_id,
+        )
+
+        snapshot = self.local_policy.snapshot()
+        self.assertEqual(self.control_store.backend_kind, "postgresql")
+        self.assertEqual(synced["bundle_version"], published["bundle_version"])
+        self.assertEqual(snapshot.setting("policy_bundle_version"), published["bundle_version"])
+        self.assertIn("postgres-live.example", snapshot.setting("allowed_destination_hosts", []))
+
+        distribution_state = self.control_store.distribution_state(instance_id, tenant_id)
+        self.assertEqual(distribution_state["bundle_version"], published["bundle_version"])
 
 
 if __name__ == "__main__":
