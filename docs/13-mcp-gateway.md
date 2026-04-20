@@ -144,7 +144,7 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 - `test_mcp_gateway_fetch_sanitizes_tool_output_and_records_mcp_audit_events`
 - `test_mcp_gateway_returns_unknown_tool_error`
 - `test_remote_web_fetch_adapter_sanitizes_live_http_source`
-- `test_remote_rag_fetch_adapter_pulls_live_json_and_marks_pii`
+- `test_remote_rag_fetch_adapter_pulls_live_json_and_marks_risk_signals`
 
 其中最后一条不是只喂一段本地字符串，而是：
 
@@ -173,8 +173,10 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
   `remote_rag_fetch`
 - 返回类型：
   `rag_chunk`
+- 风险标签：
+  `external_origin + oversized_text`
 - 结果特征：
-  远程 JSON 文档里的 `title / doc_id / content` 会被抽成统一 chunk，再进入现有入口治理
+  远程 JSON 文档里的 `title / doc_id / content` 会被抽成统一 chunk，再进入现有入口治理；当前样例还会因为超长 chunk 被标记为 `oversized_text`
 
 ## 当前价值
 
