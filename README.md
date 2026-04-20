@@ -60,6 +60,7 @@ PYTHONPATH=src python3 -m trustlayer.evaluation
 默认 MCP 入口工具：
 
 - `remote_web_fetch`：通过真实远程 HTTP 抓取网页，并在返回给 Agent 前自动做 sanitize
+- `remote_rag_fetch`：通过真实远程 HTTP 拉取 JSON 文档，并抽成 `rag_chunk`
 
 最小 fetch 示例：
 
@@ -72,6 +73,21 @@ curl -s http://127.0.0.1:8080/v1/mcp/tools/fetch \
     "tool_name": "remote_web_fetch",
     "arguments": {
       "url": "https://raw.githubusercontent.com/zackerkoi/TrustLayer/main/fixtures/remote_hidden_supplier.html"
+    }
+  }'
+```
+
+最小 RAG fetch 示例：
+
+```bash
+curl -s http://127.0.0.1:8080/v1/mcp/tools/fetch \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tenant_id": "demo",
+    "session_id": "sess_remote_rag",
+    "tool_name": "remote_rag_fetch",
+    "arguments": {
+      "url": "https://raw.githubusercontent.com/zackerkoi/TrustLayer/main/fixtures/remote_rag_chunk.json"
     }
   }'
 ```

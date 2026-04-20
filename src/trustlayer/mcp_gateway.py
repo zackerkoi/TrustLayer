@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import urllib.request
 import uuid
 from dataclasses import dataclass, field
@@ -118,6 +119,68 @@ class RemoteWebFetchAdapter:
             )
 
 
+class RemoteJSONRAGAdapter:
+    def __init__(
+        self,
+        *,
+        name: str = "remote_rag_fetch",
+        description: str = "Fetches a remote JSON document and extracts a RAG chunk through TrustLayer MCP Gateway.",
+        timeout_seconds: int = 10,
+        max_bytes: int = 200_000,
+    ) -> None:
+        self._spec = MCPToolSpec(
+            name=name,
+            description=description,
+            source_type="rag_chunk",
+            tags=("remote", "rag", "json"),
+        )
+        self.timeout_seconds = timeout_seconds
+        self.max_bytes = max_bytes
+
+    def spec(self) -> MCPToolSpec:
+        return self._spec
+
+    def fetch(self, arguments: dict[str, Any]) -> MCPToolResult:
+        url = str(arguments["url"])
+        content_field = str(arguments.get("content_field", "content"))
+        title_field = str(arguments.get("title_field", "title"))
+        id_field = str(arguments.get("id_field", "doc_id"))
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "TrustLayer-MCP-Gateway/0.1"},
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            body = response.read(self.max_bytes)
+            charset = response.headers.get_content_charset() or "utf-8"
+            payload = json.loads(body.decode(charset, errors="ignore"))
+
+        extracted = payload.get(content_field, "")
+        if isinstance(extracted, list):
+            content = "\n".join(str(item) for item in extracted)
+        else:
+            content = str(extracted)
+
+        title = payload.get(title_field)
+        doc_id = payload.get(id_field)
+        prefix_parts = [str(part) for part in (title, doc_id) if part]
+        if prefix_parts:
+            content = " | ".join(prefix_parts) + "\n" + content
+
+        return MCPToolResult(
+            source_type="rag_chunk",
+            origin=url,
+            content=content,
+            metadata={
+                "title": title,
+                "doc_id": doc_id,
+                "content_field": content_field,
+                "title_field": title_field,
+                "id_field": id_field,
+                "bytes_read": len(body),
+            },
+        )
+
+
 class MCPGatewayService:
     def __init__(
         self,
@@ -205,5 +268,5 @@ class MCPGatewayService:
 def build_default_mcp_gateway(defense_service: DefenseGatewayService) -> MCPGatewayService:
     return MCPGatewayService(
         defense_service,
-        tools=[RemoteWebFetchAdapter()],
+        tools=[RemoteWebFetchAdapter(), RemoteJSONRAGAdapter()],
     )

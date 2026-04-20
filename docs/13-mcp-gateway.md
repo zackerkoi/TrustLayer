@@ -42,9 +42,10 @@ flowchart LR
 1. 用 `MCPGatewayService` 做统一编排
 2. 用 `CallableMCPToolAdapter` 注册可被代理的外部工具
 3. 默认提供一个 `RemoteWebFetchAdapter`
-3. 每次 `fetch` 都先记录 `mcp_tool_invoked`
-4. 工具返回结果后记录 `mcp_tool_result`
-5. 再把结果交给已有 `sanitize_ingress`
+4. 默认提供一个 `RemoteJSONRAGAdapter`
+5. 每次 `fetch` 都先记录 `mcp_tool_invoked`
+6. 工具返回结果后记录 `mcp_tool_result`
+7. 再把结果交给已有 `sanitize_ingress`
 
 这样做的好处是：
 
@@ -86,6 +87,19 @@ class RemoteWebFetchAdapter:
         ...
 ```
 
+默认远程 JSON RAG adapter：
+
+```python
+class RemoteJSONRAGAdapter:
+    def fetch(self, arguments: dict[str, Any]) -> MCPToolResult:
+        url = str(arguments["url"])
+        ...
+        payload = json.loads(body.decode(charset, errors="ignore"))
+        extracted = payload.get(content_field, "")
+        ...
+        return MCPToolResult(source_type="rag_chunk", origin=url, content=content, metadata={...})
+```
+
 HTTP 接口在
 [app.py](../src/trustlayer/app.py)：
 
@@ -117,6 +131,7 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 2. `fetch` 后会自动经过 sanitize，并写入审计事件
 3. 未知工具会返回显式错误，而不是静默失败
 4. `remote_web_fetch` 可以通过真实 HTTP 获取链完成输入治理
+5. `remote_rag_fetch` 可以通过真实 JSON connector 获取链完成输入治理
 
 对应测试在：
 [test_gateway.py](../tests/test_gateway.py)
@@ -129,12 +144,15 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 - `test_mcp_gateway_fetch_sanitizes_tool_output_and_records_mcp_audit_events`
 - `test_mcp_gateway_returns_unknown_tool_error`
 - `test_remote_web_fetch_adapter_sanitizes_live_http_source`
+- `test_remote_rag_fetch_adapter_pulls_live_json_and_marks_pii`
 
 其中最后一条不是只喂一段本地字符串，而是：
 
 - 启一个真实 HTTP fixture
 - 用 `remote_web_fetch` 拉取页面
 - 再验证隐藏内容是否被 `sanitize_ingress` 去掉
+- 用 `remote_rag_fetch` 拉取远程 JSON 文档
+- 再验证 `rag_chunk` 是否正常进入 sanitize 与审计链
 
 另外，这版还实际跑过一条真正的 remote 验证：
 
@@ -146,6 +164,17 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
   `external_origin + hidden_content`
 - 时间线：
   `mcp_tool_invoked -> mcp_tool_result -> source_received -> policy_matched -> source_sanitized`
+
+另外，这版还具备一个更像 connector / RAG 的真实 remote 输入验证：
+
+- 地址：
+  `https://raw.githubusercontent.com/zackerkoi/TrustLayer/main/fixtures/remote_rag_chunk.json`
+- 入口工具：
+  `remote_rag_fetch`
+- 返回类型：
+  `rag_chunk`
+- 结果特征：
+  远程 JSON 文档里的 `title / doc_id / content` 会被抽成统一 chunk，再进入现有入口治理
 
 ## 当前价值
 

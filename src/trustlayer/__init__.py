@@ -4,6 +4,7 @@ from .mcp_gateway import (
     CallableMCPToolAdapter,
     MCPGatewayService,
     MCPToolResult,
+    RemoteJSONRAGAdapter,
     RemoteWebFetchAdapter,
     build_default_mcp_gateway,
 )
@@ -18,6 +19,7 @@ __all__ = [
     "MCPGatewayService",
     "MCPToolResult",
     "PolicyConfig",
+    "RemoteJSONRAGAdapter",
     "RemoteWebFetchAdapter",
     "build_default_mcp_gateway",
     "create_app",
