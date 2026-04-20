@@ -18,6 +18,22 @@
 
 ## 快速开始
 
+一键部署本地服务：
+
+```bash
+cd TrustLayer
+bash scripts/deploy-local.sh
+```
+
+脚本会自动优先选择可用的 `python3.10+`。
+
+带策略文件启动：
+
+```bash
+cd TrustLayer
+POLICY_FILE=config/policy.example.json bash scripts/deploy-local.sh
+```
+
 运行测试：
 
 ```bash
@@ -25,18 +41,11 @@ cd TrustLayer
 PYTHONPATH=src python3 -m unittest discover -s tests -v
 ```
 
-启动本地 HTTP 服务：
+如果你想手动启动服务，也可以直接运行：
 
 ```bash
 cd TrustLayer
 PYTHONPATH=src python3 -m trustlayer.main --port 8080
-```
-
-带外部策略文件启动：
-
-```bash
-cd TrustLayer
-PYTHONPATH=src python3 -m trustlayer.main --port 8080 --policy-file config/policy.example.json
 ```
 
 回放某个 session 的审计时间线：
