@@ -234,6 +234,12 @@ class MCPGatewayService:
                 return spec
         return None
 
+    def resolve_tool(self, tool_name: str) -> ToolDescriptor | None:
+        tool = self._tools.get(tool_name)
+        if tool is None:
+            return None
+        return tool.spec()
+
     def fetch_tool(
         self,
         *,
@@ -249,6 +255,76 @@ class MCPGatewayService:
             direction="ingress",
             arguments=arguments,
         )
+
+    def sanitize_supplied_tool_result(
+        self,
+        *,
+        tenant_id: str,
+        session_id: str,
+        tool_name: str,
+        source_type: str,
+        origin: str,
+        content: str,
+        result_metadata: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        tool = self._tools.get(tool_name)
+        if tool is None:
+            raise ToolNotFoundError(tool_name)
+        spec = tool.spec()
+        if spec.direction != "ingress":
+            raise ToolDirectionNotSupportedError(f"{tool_name}:{spec.direction}")
+
+        request_id = f"mcpreq_{uuid.uuid4().hex[:12]}"
+        audit_metadata = {
+            "tool_name": tool_name,
+            "direction": spec.direction,
+            "trust_tier": spec.trust_tier,
+            "tool_tags": list(spec.tags),
+        }
+        effective_source_type = spec.source_type or source_type
+        self.defense.audit.append_event(
+            session_id=session_id,
+            request_id=request_id,
+            tenant_id=tenant_id,
+            event_type="mcp_tool_result",
+            summary=f"MCP gateway accepted supplied {tool_name} result",
+            metadata={
+                **audit_metadata,
+                "source_type": effective_source_type,
+                "origin": origin,
+                "result_metadata": result_metadata or {},
+            },
+        )
+        sanitized = self.defense.sanitize_ingress(
+            tenant_id=tenant_id,
+            session_id=session_id,
+            source_type=effective_source_type,
+            origin=origin,
+            content=content,
+            request_id=request_id,
+            audit_metadata=audit_metadata,
+        )
+        return {
+            "request_id": request_id,
+            "tool_name": tool_name,
+            "tool": {
+                "name": spec.name,
+                "direction": spec.direction,
+                "trust_tier": spec.trust_tier,
+                "source_type": spec.source_type,
+                "destination_type": spec.destination_type,
+                "tags": list(spec.tags),
+            },
+            "source": {
+                "origin": origin,
+                "source_type": effective_source_type,
+                "metadata": result_metadata or {},
+            },
+            "decision": sanitized.decision,
+            "risk_flags": sanitized.risk_flags,
+            "matched_policies": sanitized.matched_policies,
+            "sanitized_content": sanitized.payload,
+        }
 
     def invoke_tool(
         self,

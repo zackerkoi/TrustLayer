@@ -31,6 +31,30 @@ def create_app(
 
             if method == "POST" and path == "/v1/ingress/sanitize":
                 body = _read_json_body(environ)
+                if mcp_gateway is not None and "tool_name" in body:
+                    result = mcp_gateway.sanitize_supplied_tool_result(
+                        tenant_id=body["tenant_id"],
+                        session_id=body["session_id"],
+                        tool_name=body["tool_name"],
+                        source_type=body["source_type"],
+                        origin=body["origin"],
+                        content=body["content"],
+                        result_metadata=body.get("result_metadata"),
+                    )
+                    return _json_response(
+                        start_response,
+                        200,
+                        {
+                            "request_id": result["request_id"],
+                            "tool_name": result["tool_name"],
+                            "tool": result["tool"],
+                            "decision": result["decision"],
+                            "risk_flags": result["risk_flags"],
+                            "matched_policies": result["matched_policies"],
+                            "sanitized_content": result["sanitized_content"],
+                        },
+                    )
+
                 result = service.sanitize_ingress(
                     tenant_id=body["tenant_id"],
                     session_id=body["session_id"],

@@ -12,6 +12,7 @@
 当前迁移策略是：
 
 - `POST /v1/mcp/invoke` 作为统一新入口
+- `POST /v1/ingress/sanitize` 在带 `tool_name` 时，会补挂到统一 ingress tool identity
 - `POST /v1/egress/check` 在存在匹配 egress tool 时，会自动转到 unified invoke
 - 其他未映射的 egress 类型仍保留旧路径，避免一次性打断兼容性
 

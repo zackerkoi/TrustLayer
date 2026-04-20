@@ -134,6 +134,7 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 
 另外，当前兼容策略已经往前走了一步：
 
+- `POST /v1/ingress/sanitize` 在带 `tool_name` 时，会复用统一 ingress tool identity
 - `POST /v1/egress/check` 在存在匹配 egress tool 时，会自动转到 unified invoke
 - 如果没有匹配到 egress tool，则回退旧的 `service.check_egress` 路径
 
@@ -158,6 +159,8 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 - `test_mcp_gateway_fetch_sanitizes_tool_output_and_records_mcp_audit_events`
 - `test_mcp_gateway_invoke_unifies_ingress_under_one_request_id`
 - `test_mcp_gateway_invoke_routes_egress_tool_through_egress_pipeline`
+- `test_wsgi_ingress_sanitize_uses_tool_identity_when_tool_name_is_provided`
+- `test_wsgi_ingress_sanitize_rejects_egress_tool_identity`
 - `test_wsgi_egress_check_uses_unified_invoke_when_matching_egress_tool_exists`
 - `test_wsgi_egress_check_falls_back_when_no_matching_egress_tool_exists`
 - `test_mcp_gateway_returns_unknown_tool_error`
@@ -212,6 +215,7 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 - 入口层已经不只是 mock adapter，而是能跑真实 remote fetch
 - 统一 broker 已经开始落地，ingress 和 egress 可以共用一个 invoke 入口
 - 同一次工具调用已经能围绕共享 `request_id` 留下更完整的审计链
+- 老的 `/v1/ingress/sanitize` 现在也能在兼容模式下补上统一 tool identity
 - 老的 `/v1/egress/check` 已经能在兼容模式下逐步迁到 unified invoke，而不需要调用方立刻改代码
 
 ## 当前限制
