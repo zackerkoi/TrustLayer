@@ -34,6 +34,8 @@ def make_mcp_gateway(service: DefenseGatewayService) -> MCPGatewayService:
                 name="web_search",
                 description="Fetches supplier research pages through the gateway.",
                 source_type="web_page",
+                direction="ingress",
+                trust_tier="untrusted",
                 tags=("web", "research"),
                 handler=lambda arguments: MCPToolResult(
                     source_type="web_page",
@@ -50,12 +52,29 @@ def make_mcp_gateway(service: DefenseGatewayService) -> MCPGatewayService:
                 name="rag_lookup",
                 description="Fetches a RAG chunk through the gateway.",
                 source_type="rag_chunk",
+                direction="ingress",
+                trust_tier="untrusted",
                 tags=("rag",),
                 handler=lambda arguments: MCPToolResult(
                     source_type="rag_chunk",
                     origin=f"rag://kb/{arguments['doc_id']}",
                     content="Customer note with alice@example.com for follow-up.",
                     metadata={"doc_id": arguments["doc_id"]},
+                ),
+            ),
+            CallableMCPToolAdapter(
+                name="webhook_post",
+                description="Posts outbound payloads through the gateway.",
+                source_type="internal",
+                direction="egress",
+                trust_tier="trusted",
+                destination_type="webhook",
+                tags=("egress", "webhook"),
+                handler=lambda arguments: MCPToolResult(
+                    source_type="internal",
+                    origin=f"egress://{arguments.get('destination', 'unknown')}",
+                    content=str(arguments.get("payload", "")),
+                    metadata={"destination": arguments.get("destination")},
                 ),
             ),
         ],
@@ -481,8 +500,16 @@ class GatewayScenariosTest(unittest.TestCase):
         status, body = call_wsgi(app, "GET", "/v1/mcp/tools")
 
         self.assertTrue(str(status).startswith("200"))
-        self.assertEqual([item["name"] for item in body["items"]], ["rag_lookup", "web_search"])
+        self.assertEqual(
+            [item["name"] for item in body["items"]],
+            ["rag_lookup", "web_search", "webhook_post"],
+        )
+        self.assertEqual(body["items"][1]["direction"], "ingress")
         self.assertEqual(body["items"][1]["source_type"], "web_page")
+        self.assertEqual(body["items"][1]["trust_tier"], "untrusted")
+        self.assertEqual(body["items"][2]["direction"], "egress")
+        self.assertEqual(body["items"][2]["destination_type"], "webhook")
+        self.assertEqual(body["items"][2]["trust_tier"], "trusted")
 
     def test_mcp_gateway_fetch_sanitizes_tool_output_and_records_mcp_audit_events(self) -> None:
         app = create_app(self.service, mcp_gateway=make_mcp_gateway(self.service))
@@ -501,6 +528,8 @@ class GatewayScenariosTest(unittest.TestCase):
 
         self.assertTrue(str(status).startswith("200"))
         self.assertEqual(body["tool_name"], "web_search")
+        self.assertEqual(body["tool"]["direction"], "ingress")
+        self.assertEqual(body["tool"]["trust_tier"], "untrusted")
         self.assertEqual(body["decision"], "allow_sanitized")
         self.assertIn("hidden_content", body["risk_flags"])
         self.assertIn("Visible findings only.", body["sanitized_content"]["content"]["visible_excerpt"])
@@ -539,6 +568,29 @@ class GatewayScenariosTest(unittest.TestCase):
         self.assertTrue(str(status).startswith("404"))
         self.assertEqual(body["error"], "unknown_tool")
         self.assertEqual(body["tool_name"], "missing_tool")
+
+    def test_mcp_gateway_rejects_fetch_for_egress_only_tool(self) -> None:
+        app = create_app(self.service, mcp_gateway=make_mcp_gateway(self.service))
+
+        status, body = call_wsgi(
+            app,
+            "POST",
+            "/v1/mcp/tools/fetch",
+            {
+                "tenant_id": "demo",
+                "session_id": "sess_egress_tool_fetch",
+                "tool_name": "webhook_post",
+                "arguments": {
+                    "destination": "https://hooks.example.net/collect",
+                    "payload": "benign payload",
+                },
+            },
+        )
+
+        self.assertTrue(str(status).startswith("400"))
+        self.assertEqual(body["error"], "unsupported_tool_direction")
+        self.assertEqual(body["tool_name"], "webhook_post")
+        self.assertEqual(body["direction"], "egress")
 
     def test_remote_web_fetch_adapter_sanitizes_live_http_source(self) -> None:
         with LiveHTTPFixture() as fixture:

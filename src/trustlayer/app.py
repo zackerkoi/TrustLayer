@@ -5,7 +5,11 @@ from html import escape
 from urllib.parse import parse_qs
 from typing import Any, Callable, Iterable
 
-from .mcp_gateway import MCPGatewayService, ToolNotFoundError
+from .mcp_gateway import (
+    MCPGatewayService,
+    ToolDirectionNotSupportedError,
+    ToolNotFoundError,
+)
 from .service import DefenseGatewayService
 
 
@@ -128,6 +132,17 @@ def create_app(
             return _json_response(start_response, 400, {"error": "invalid_json"})
         except ToolNotFoundError as exc:
             return _json_response(start_response, 404, {"error": "unknown_tool", "tool_name": str(exc)})
+        except ToolDirectionNotSupportedError as exc:
+            tool_name, _, direction = str(exc).partition(":")
+            return _json_response(
+                start_response,
+                400,
+                {
+                    "error": "unsupported_tool_direction",
+                    "tool_name": tool_name,
+                    "direction": direction or "unknown",
+                },
+            )
 
     return app
 

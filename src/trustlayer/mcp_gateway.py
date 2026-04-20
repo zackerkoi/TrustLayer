@@ -17,13 +17,22 @@ class ToolNotFoundError(MCPGatewayError):
     pass
 
 
+class ToolDirectionNotSupportedError(MCPGatewayError):
+    pass
+
+
 @dataclass(frozen=True)
-class MCPToolSpec:
+class ToolDescriptor:
     name: str
     description: str
-    source_type: str
-    trust_level: str = "untrusted"
+    direction: str = "ingress"
+    trust_tier: str = "untrusted"
+    source_type: str | None = None
+    destination_type: str | None = None
     tags: tuple[str, ...] = ()
+
+
+MCPToolSpec = ToolDescriptor
 
 
 @dataclass(frozen=True)
@@ -35,7 +44,7 @@ class MCPToolResult:
 
 
 class MCPToolAdapter(Protocol):
-    def spec(self) -> MCPToolSpec:
+    def spec(self) -> ToolDescriptor:
         ...
 
     def fetch(self, arguments: dict[str, Any]) -> MCPToolResult:
@@ -48,24 +57,30 @@ class CallableMCPToolAdapter:
         *,
         name: str,
         description: str,
-        source_type: str,
+        source_type: str | None,
         handler: Callable[[dict[str, Any]], MCPToolResult],
+        direction: str = "ingress",
+        trust_tier: str = "untrusted",
+        destination_type: str | None = None,
         tags: tuple[str, ...] = (),
     ) -> None:
-        self._spec = MCPToolSpec(
+        self._spec = ToolDescriptor(
             name=name,
             description=description,
+            direction=direction,
+            trust_tier=trust_tier,
             source_type=source_type,
+            destination_type=destination_type,
             tags=tags,
         )
         self._handler = handler
 
-    def spec(self) -> MCPToolSpec:
+    def spec(self) -> ToolDescriptor:
         return self._spec
 
     def fetch(self, arguments: dict[str, Any]) -> MCPToolResult:
         result = self._handler(arguments)
-        if result.source_type != self._spec.source_type:
+        if self._spec.source_type and result.source_type != self._spec.source_type:
             return MCPToolResult(
                 source_type=self._spec.source_type,
                 origin=result.origin,
@@ -84,16 +99,18 @@ class RemoteWebFetchAdapter:
         timeout_seconds: int = 10,
         max_bytes: int = 200_000,
     ) -> None:
-        self._spec = MCPToolSpec(
+        self._spec = ToolDescriptor(
             name=name,
             description=description,
+            direction="ingress",
+            trust_tier="untrusted",
             source_type="web_page",
             tags=("remote", "web"),
         )
         self.timeout_seconds = timeout_seconds
         self.max_bytes = max_bytes
 
-    def spec(self) -> MCPToolSpec:
+    def spec(self) -> ToolDescriptor:
         return self._spec
 
     def fetch(self, arguments: dict[str, Any]) -> MCPToolResult:
@@ -128,16 +145,18 @@ class RemoteJSONRAGAdapter:
         timeout_seconds: int = 10,
         max_bytes: int = 200_000,
     ) -> None:
-        self._spec = MCPToolSpec(
+        self._spec = ToolDescriptor(
             name=name,
             description=description,
+            direction="ingress",
+            trust_tier="untrusted",
             source_type="rag_chunk",
             tags=("remote", "rag", "json"),
         )
         self.timeout_seconds = timeout_seconds
         self.max_bytes = max_bytes
 
-    def spec(self) -> MCPToolSpec:
+    def spec(self) -> ToolDescriptor:
         return self._spec
 
     def fetch(self, arguments: dict[str, Any]) -> MCPToolResult:
@@ -198,8 +217,11 @@ class MCPGatewayService:
                 {
                     "name": spec.name,
                     "description": spec.description,
+                    "direction": spec.direction,
                     "source_type": spec.source_type,
-                    "trust_level": spec.trust_level,
+                    "destination_type": spec.destination_type,
+                    "trust_tier": spec.trust_tier,
+                    "trust_level": spec.trust_tier,
                     "tags": list(spec.tags),
                 }
             )
@@ -216,6 +238,11 @@ class MCPGatewayService:
         tool = self._tools.get(tool_name)
         if tool is None:
             raise ToolNotFoundError(tool_name)
+        spec = tool.spec()
+        if spec.direction != "ingress":
+            raise ToolDirectionNotSupportedError(
+                f"{tool_name}:{spec.direction}"
+            )
 
         request_id = f"mcpreq_{uuid.uuid4().hex[:12]}"
         self.defense.audit.append_event(
@@ -224,7 +251,12 @@ class MCPGatewayService:
             tenant_id=tenant_id,
             event_type="mcp_tool_invoked",
             summary=f"MCP gateway invoked {tool_name}",
-            metadata={"tool_name": tool_name, "arguments": arguments},
+            metadata={
+                "tool_name": tool_name,
+                "arguments": arguments,
+                "direction": spec.direction,
+                "trust_tier": spec.trust_tier,
+            },
         )
 
         tool_result = tool.fetch(arguments)
@@ -236,6 +268,7 @@ class MCPGatewayService:
             summary=f"MCP gateway received {tool_name} result",
             metadata={
                 "tool_name": tool_name,
+                "direction": spec.direction,
                 "source_type": tool_result.source_type,
                 "origin": tool_result.origin,
                 "result_metadata": tool_result.metadata,
@@ -252,6 +285,14 @@ class MCPGatewayService:
         return {
             "request_id": request_id,
             "tool_name": tool_name,
+            "tool": {
+                "name": spec.name,
+                "direction": spec.direction,
+                "trust_tier": spec.trust_tier,
+                "source_type": spec.source_type,
+                "destination_type": spec.destination_type,
+                "tags": list(spec.tags),
+            },
             "arguments": arguments,
             "source": {
                 "origin": tool_result.origin,

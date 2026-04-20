@@ -6,6 +6,7 @@ from .mcp_gateway import (
     MCPToolResult,
     RemoteJSONRAGAdapter,
     RemoteWebFetchAdapter,
+    ToolDescriptor,
     build_default_mcp_gateway,
 )
 from .policy import PolicyConfig
@@ -21,6 +22,7 @@ __all__ = [
     "PolicyConfig",
     "RemoteJSONRAGAdapter",
     "RemoteWebFetchAdapter",
+    "ToolDescriptor",
     "build_default_mcp_gateway",
     "create_app",
     "format_timeline",
