@@ -42,6 +42,20 @@ POLICY_FILE=config/policy.example.json bash scripts/deploy-local.sh
 - `decision_rules`
 - `approval_summary_rules`
 
+控制面存储默认还是本地 SQLite，方便开发和 PoC；生产路径已经支持把控制面元数据切到 PostgreSQL DSN：
+
+```bash
+cd TrustLayer
+PYTHONPATH=src python3 -m trustlayer.main \
+  --control-db-path postgresql://trustlayer:secret@localhost:5432/trustlayer
+```
+
+如果要启用 PostgreSQL 控制面依赖：
+
+```bash
+pip install '.[postgres]'
+```
+
 运行测试：
 
 ```bash

@@ -9,5 +9,8 @@ description = "TrustLayer gateway and audit infrastructure for agent defense."
 readme = "README.md"
 requires-python = ">=3.10"
 
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2"]
+
 [tool.setuptools.packages.find]
 where = ["src"]

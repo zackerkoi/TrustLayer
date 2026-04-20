@@ -199,6 +199,11 @@ sequenceDiagram
 
 而不是让每个执行节点都直接查中心数据库。
 
+当前代码也已经沿这个方向走了一步：
+
+- 本地执行面策略仍然落在本机 SQLite
+- 控制面元数据存储已经支持 `SQLite 开发 / PostgreSQL 生产` 双路径
+
 ### 4. Policy Distribution Service
 
 这块非常关键，但很容易被忽略。

@@ -9,6 +9,7 @@ from pathlib import Path
 from trustlayer.app import create_app
 from trustlayer.audit import AuditStore
 from trustlayer.audit_pipeline import AuditForwarder
+from trustlayer import control_plane
 from trustlayer.control_plane import ControlPlaneStore, PolicyDistributionService, RuleManagementService
 from trustlayer.policy import PolicyStore
 from trustlayer.service import DefenseGatewayService
@@ -62,6 +63,7 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         self.temp_dir.cleanup()
 
     def test_publish_bind_and_sync_updates_local_policy_bundle(self) -> None:
+        self.assertEqual(self.control_store.backend_kind, "sqlite")
         config_path = Path(__file__).resolve().parents[1] / "config" / "policy.example.json"
         document = json.loads(config_path.read_text(encoding="utf-8"))
         document["settings"]["allowed_destination_hosts"] = ["post-sync.example"]
@@ -162,6 +164,49 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         self.assertEqual(binding["status"], "bound")
         self.assertEqual(synced["bundle_version"], published["bundle_version"])
         self.assertTrue(synced["updated"])
+
+    def test_postgres_control_plane_target_requires_psycopg_or_uses_postgres_backend(self) -> None:
+        dsn = "postgresql://trustlayer:secret@localhost:5432/trustlayer"
+        if control_plane.psycopg is None:
+            with self.assertRaises(RuntimeError):
+                ControlPlaneStore(dsn)
+            return
+
+        class FakePostgresBackend:
+            backend_kind = "postgresql"
+
+            def __init__(self, location: str) -> None:
+                self.location = location
+
+            def create_bundle(self, document, created_by, change_summary):
+                return "bundle_fake"
+
+            def update_bundle_document(self, bundle_version, document):
+                return None
+
+            def get_bundle(self, bundle_version):
+                raise AssertionError("not used")
+
+            def bind_tenant(self, tenant_id, bundle_version, rollout_state):
+                return None
+
+            def resolve_bundle_for_tenant(self, tenant_id):
+                raise AssertionError("not used")
+
+            def record_distribution(self, instance_id, tenant_id, bundle_version, status):
+                return None
+
+            def distribution_state(self, instance_id, tenant_id):
+                return None
+
+        original = control_plane._PostgresControlPlaneBackend
+        control_plane._PostgresControlPlaneBackend = FakePostgresBackend
+        try:
+            store = ControlPlaneStore(dsn)
+        finally:
+            control_plane._PostgresControlPlaneBackend = original
+
+        self.assertEqual(store.backend_kind, "postgresql")
 
 
 if __name__ == "__main__":

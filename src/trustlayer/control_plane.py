@@ -5,9 +5,18 @@ import sqlite3
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Protocol
 
-from .policy import PolicyStore
+try:
+    import psycopg  # type: ignore[import-not-found]
+    from psycopg.rows import dict_row  # type: ignore[import-not-found]
+except ImportError:  # pragma: no cover - covered via runtime fallback test
+    psycopg = None
+    dict_row = None
+
+
+def _is_postgres_target(location: str) -> bool:
+    return location.startswith("postgresql://") or location.startswith("postgres://")
 
 
 @dataclass(frozen=True)
@@ -19,7 +28,34 @@ class PolicyBundle:
     created_at: str
 
 
-class ControlPlaneStore:
+class _Backend(Protocol):
+    backend_kind: str
+
+    def create_bundle(self, document: dict[str, Any], created_by: str, change_summary: str) -> str:
+        ...
+
+    def update_bundle_document(self, bundle_version: str, document: dict[str, Any]) -> None:
+        ...
+
+    def get_bundle(self, bundle_version: str) -> PolicyBundle:
+        ...
+
+    def bind_tenant(self, tenant_id: str, bundle_version: str, rollout_state: str) -> None:
+        ...
+
+    def resolve_bundle_for_tenant(self, tenant_id: str) -> PolicyBundle:
+        ...
+
+    def record_distribution(self, instance_id: str, tenant_id: str, bundle_version: str, status: str) -> None:
+        ...
+
+    def distribution_state(self, instance_id: str, tenant_id: str) -> dict[str, Any] | None:
+        ...
+
+
+class _SQLiteControlPlaneBackend:
+    backend_kind = "sqlite"
+
     def __init__(self, db_path: str | Path) -> None:
         self.db_path = str(db_path)
         self._memory_conn: sqlite3.Connection | None = None
@@ -71,13 +107,7 @@ class ControlPlaneStore:
                 """
             )
 
-    def create_bundle(
-        self,
-        *,
-        document: dict[str, Any],
-        created_by: str,
-        change_summary: str,
-    ) -> str:
+    def create_bundle(self, document: dict[str, Any], created_by: str, change_summary: str) -> str:
         bundle_version = f"bundle_{uuid.uuid4().hex[:12]}"
         with self._connect() as conn:
             conn.execute(
@@ -93,6 +123,13 @@ class ControlPlaneStore:
                 ),
             )
         return bundle_version
+
+    def update_bundle_document(self, bundle_version: str, document: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE policy_bundles SET document_json = ? WHERE bundle_version = ?",
+                (json.dumps(document, ensure_ascii=True, sort_keys=True), bundle_version),
+            )
 
     def get_bundle(self, bundle_version: str) -> PolicyBundle:
         with self._connect() as conn:
@@ -114,7 +151,7 @@ class ControlPlaneStore:
             created_at=row["created_at"],
         )
 
-    def bind_tenant(self, tenant_id: str, bundle_version: str, rollout_state: str = "active") -> None:
+    def bind_tenant(self, tenant_id: str, bundle_version: str, rollout_state: str) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
@@ -138,14 +175,7 @@ class ControlPlaneStore:
             raise KeyError(f"tenant_not_bound:{tenant_id}")
         return self.get_bundle(row["bundle_version"])
 
-    def record_distribution(
-        self,
-        *,
-        instance_id: str,
-        tenant_id: str,
-        bundle_version: str,
-        status: str,
-    ) -> None:
+    def record_distribution(self, instance_id: str, tenant_id: str, bundle_version: str, status: str) -> None:
         with self._connect() as conn:
             conn.execute(
                 """
@@ -174,6 +204,227 @@ class ControlPlaneStore:
         return dict(row)
 
 
+class _PostgresControlPlaneBackend:
+    backend_kind = "postgresql"
+
+    def __init__(self, dsn: str) -> None:
+        if psycopg is None:
+            raise RuntimeError(
+                "PostgreSQL control plane store requires psycopg. "
+                "Install with `pip install 'psycopg[binary]'`."
+            )
+        self.dsn = dsn
+        self._init_db()
+
+    def _connect(self):
+        assert psycopg is not None
+        assert dict_row is not None
+        return psycopg.connect(self.dsn, row_factory=dict_row)
+
+    def _init_db(self) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS policy_bundles (
+                        bundle_version TEXT PRIMARY KEY,
+                        document_json JSONB NOT NULL,
+                        created_by TEXT NOT NULL,
+                        change_summary TEXT NOT NULL,
+                        created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS tenant_policy_bindings (
+                        tenant_id TEXT PRIMARY KEY,
+                        bundle_version TEXT NOT NULL,
+                        rollout_state TEXT NOT NULL DEFAULT 'active',
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+                    )
+                    """
+                )
+                cur.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS distribution_status (
+                        instance_id TEXT NOT NULL,
+                        tenant_id TEXT NOT NULL,
+                        bundle_version TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                        PRIMARY KEY (instance_id, tenant_id)
+                    )
+                    """
+                )
+            conn.commit()
+
+    def create_bundle(self, document: dict[str, Any], created_by: str, change_summary: str) -> str:
+        bundle_version = f"bundle_{uuid.uuid4().hex[:12]}"
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO policy_bundles (bundle_version, document_json, created_by, change_summary)
+                    VALUES (%s, %s::jsonb, %s, %s)
+                    """,
+                    (
+                        bundle_version,
+                        json.dumps(document, ensure_ascii=True, sort_keys=True),
+                        created_by,
+                        change_summary,
+                    ),
+                )
+            conn.commit()
+        return bundle_version
+
+    def update_bundle_document(self, bundle_version: str, document: dict[str, Any]) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE policy_bundles SET document_json = %s::jsonb WHERE bundle_version = %s",
+                    (json.dumps(document, ensure_ascii=True, sort_keys=True), bundle_version),
+                )
+            conn.commit()
+
+    def get_bundle(self, bundle_version: str) -> PolicyBundle:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT bundle_version, document_json, created_by, change_summary, created_at
+                    FROM policy_bundles
+                    WHERE bundle_version = %s
+                    """,
+                    (bundle_version,),
+                )
+                row = cur.fetchone()
+        if row is None:
+            raise KeyError(f"unknown_bundle:{bundle_version}")
+        document = row["document_json"]
+        if isinstance(document, str):
+            document = json.loads(document)
+        return PolicyBundle(
+            bundle_version=row["bundle_version"],
+            document=document,
+            created_by=row["created_by"],
+            change_summary=row["change_summary"],
+            created_at=str(row["created_at"]),
+        )
+
+    def bind_tenant(self, tenant_id: str, bundle_version: str, rollout_state: str) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO tenant_policy_bindings (tenant_id, bundle_version, rollout_state)
+                    VALUES (%s, %s, %s)
+                    ON CONFLICT(tenant_id) DO UPDATE SET
+                        bundle_version = EXCLUDED.bundle_version,
+                        rollout_state = EXCLUDED.rollout_state,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (tenant_id, bundle_version, rollout_state),
+                )
+            conn.commit()
+
+    def resolve_bundle_for_tenant(self, tenant_id: str) -> PolicyBundle:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT bundle_version FROM tenant_policy_bindings WHERE tenant_id = %s",
+                    (tenant_id,),
+                )
+                row = cur.fetchone()
+        if row is None:
+            raise KeyError(f"tenant_not_bound:{tenant_id}")
+        return self.get_bundle(row["bundle_version"])
+
+    def record_distribution(self, instance_id: str, tenant_id: str, bundle_version: str, status: str) -> None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    INSERT INTO distribution_status (instance_id, tenant_id, bundle_version, status)
+                    VALUES (%s, %s, %s, %s)
+                    ON CONFLICT(instance_id, tenant_id) DO UPDATE SET
+                        bundle_version = EXCLUDED.bundle_version,
+                        status = EXCLUDED.status,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (instance_id, tenant_id, bundle_version, status),
+                )
+            conn.commit()
+
+    def distribution_state(self, instance_id: str, tenant_id: str) -> dict[str, Any] | None:
+        with self._connect() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT instance_id, tenant_id, bundle_version, status, updated_at
+                    FROM distribution_status
+                    WHERE instance_id = %s AND tenant_id = %s
+                    """,
+                    (instance_id, tenant_id),
+                )
+                row = cur.fetchone()
+        if row is None:
+            return None
+        result = dict(row)
+        if "updated_at" in result:
+            result["updated_at"] = str(result["updated_at"])
+        return result
+
+
+class ControlPlaneStore:
+    def __init__(self, location: str | Path) -> None:
+        self.location = str(location)
+        self._backend: _Backend = self._build_backend(self.location)
+
+    @property
+    def backend_kind(self) -> str:
+        return self._backend.backend_kind
+
+    def _build_backend(self, location: str) -> _Backend:
+        if _is_postgres_target(location):
+            return _PostgresControlPlaneBackend(location)
+        return _SQLiteControlPlaneBackend(location)
+
+    def create_bundle(
+        self,
+        *,
+        document: dict[str, Any],
+        created_by: str,
+        change_summary: str,
+    ) -> str:
+        return self._backend.create_bundle(document, created_by, change_summary)
+
+    def update_bundle_document(self, bundle_version: str, document: dict[str, Any]) -> None:
+        self._backend.update_bundle_document(bundle_version, document)
+
+    def get_bundle(self, bundle_version: str) -> PolicyBundle:
+        return self._backend.get_bundle(bundle_version)
+
+    def bind_tenant(self, tenant_id: str, bundle_version: str, rollout_state: str = "active") -> None:
+        self._backend.bind_tenant(tenant_id, bundle_version, rollout_state)
+
+    def resolve_bundle_for_tenant(self, tenant_id: str) -> PolicyBundle:
+        return self._backend.resolve_bundle_for_tenant(tenant_id)
+
+    def record_distribution(
+        self,
+        *,
+        instance_id: str,
+        tenant_id: str,
+        bundle_version: str,
+        status: str,
+    ) -> None:
+        self._backend.record_distribution(instance_id, tenant_id, bundle_version, status)
+
+    def distribution_state(self, instance_id: str, tenant_id: str) -> dict[str, Any] | None:
+        return self._backend.distribution_state(instance_id, tenant_id)
+
+
 class RuleManagementService:
     def __init__(self, control_store: ControlPlaneStore) -> None:
         self.control_store = control_store
@@ -193,28 +444,29 @@ class RuleManagementService:
             change_summary=change_summary,
         )
         settings["policy_bundle_version"] = bundle_version
-        # Persist again with bundle version embedded.
-        with self.control_store._connect() as conn:
-            conn.execute(
-                "UPDATE policy_bundles SET document_json = ? WHERE bundle_version = ?",
-                (json.dumps(payload, ensure_ascii=True, sort_keys=True), bundle_version),
-            )
+        self.control_store.update_bundle_document(bundle_version, payload)
         return {
             "bundle_version": bundle_version,
             "created_by": created_by,
             "change_summary": change_summary,
+            "backend_kind": self.control_store.backend_kind,
         }
 
     def bind_tenant(self, tenant_id: str, bundle_version: str) -> dict[str, Any]:
         self.control_store.bind_tenant(tenant_id, bundle_version)
-        return {"tenant_id": tenant_id, "bundle_version": bundle_version, "status": "bound"}
+        return {
+            "tenant_id": tenant_id,
+            "bundle_version": bundle_version,
+            "status": "bound",
+            "backend_kind": self.control_store.backend_kind,
+        }
 
 
 class PolicyDistributionService:
     def __init__(
         self,
         control_store: ControlPlaneStore,
-        local_policy_store: PolicyStore,
+        local_policy_store: Any,
     ) -> None:
         self.control_store = control_store
         self.local_policy_store = local_policy_store
@@ -239,4 +491,5 @@ class PolicyDistributionService:
             "updated": updated,
             "local_version_before": local_version or None,
             "local_version_after": bundle.bundle_version,
+            "backend_kind": self.control_store.backend_kind,
         }

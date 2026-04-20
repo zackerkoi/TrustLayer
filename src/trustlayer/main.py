@@ -28,7 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--control-db-path",
         default=str(Path("control-plane.sqlite3").resolve()),
-        help="SQLite file for control plane metadata",
+        help="Control plane SQLite path or PostgreSQL DSN",
     )
     parser.add_argument(
         "--central-audit-db-path",
