@@ -227,6 +227,13 @@ class MCPGatewayService:
             )
         return items
 
+    def resolve_egress_tool(self, destination_type: str) -> ToolDescriptor | None:
+        for name in sorted(self._tools):
+            spec = self._tools[name].spec()
+            if spec.direction == "egress" and spec.destination_type == destination_type:
+                return spec
+        return None
+
     def fetch_tool(
         self,
         *,

@@ -52,6 +52,35 @@ def create_app(
 
             if method == "POST" and path == "/v1/egress/check":
                 body = _read_json_body(environ)
+                if mcp_gateway is not None:
+                    spec = mcp_gateway.resolve_egress_tool(body["destination_type"])
+                else:
+                    spec = None
+
+                if spec is not None:
+                    payload = mcp_gateway.invoke_tool(
+                        tenant_id=body["tenant_id"],
+                        session_id=body["session_id"],
+                        tool_name=spec.name,
+                        direction="egress",
+                        arguments={
+                            "destination": body["destination"],
+                            "destination_type": body["destination_type"],
+                            "payload": body["payload"],
+                        },
+                    )
+                    return _json_response(
+                        start_response,
+                        200,
+                        {
+                            "request_id": payload["request_id"],
+                            "decision": payload["decision"],
+                            "risk_flags": payload["risk_flags"],
+                            "matched_policies": payload["matched_policies"],
+                            "egress": payload.get("egress"),
+                        },
+                    )
+
                 result = service.check_egress(
                     tenant_id=body["tenant_id"],
                     session_id=body["session_id"],
@@ -67,6 +96,7 @@ def create_app(
                         "decision": result.decision,
                         "risk_flags": result.risk_flags,
                         "matched_policies": result.matched_policies,
+                        "egress": result.payload,
                     },
                 )
 

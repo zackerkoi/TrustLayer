@@ -132,6 +132,11 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 - `direction`
 - `arguments`
 
+另外，当前兼容策略已经往前走了一步：
+
+- `POST /v1/egress/check` 在存在匹配 egress tool 时，会自动转到 unified invoke
+- 如果没有匹配到 egress tool，则回退旧的 `service.check_egress` 路径
+
 ## 验证测试设计
 
 当前 MCP Gateway 相关测试先覆盖三件事：
@@ -153,6 +158,8 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 - `test_mcp_gateway_fetch_sanitizes_tool_output_and_records_mcp_audit_events`
 - `test_mcp_gateway_invoke_unifies_ingress_under_one_request_id`
 - `test_mcp_gateway_invoke_routes_egress_tool_through_egress_pipeline`
+- `test_wsgi_egress_check_uses_unified_invoke_when_matching_egress_tool_exists`
+- `test_wsgi_egress_check_falls_back_when_no_matching_egress_tool_exists`
 - `test_mcp_gateway_returns_unknown_tool_error`
 - `test_remote_web_fetch_adapter_sanitizes_live_http_source`
 - `test_remote_rag_fetch_adapter_pulls_live_json_and_marks_risk_signals`
@@ -205,6 +212,7 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 - 入口层已经不只是 mock adapter，而是能跑真实 remote fetch
 - 统一 broker 已经开始落地，ingress 和 egress 可以共用一个 invoke 入口
 - 同一次工具调用已经能围绕共享 `request_id` 留下更完整的审计链
+- 老的 `/v1/egress/check` 已经能在兼容模式下逐步迁到 unified invoke，而不需要调用方立刻改代码
 
 ## 当前限制
 

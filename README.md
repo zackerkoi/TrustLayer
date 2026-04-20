@@ -9,6 +9,12 @@
 - `audit timeline`：按 `session_id` 回放关键事件
 - `mcp gateway`：统一代理 MCP / skill 风格输入，并复用 ingress sanitize
 
+当前迁移策略是：
+
+- `POST /v1/mcp/invoke` 作为统一新入口
+- `POST /v1/egress/check` 在存在匹配 egress tool 时，会自动转到 unified invoke
+- 其他未映射的 egress 类型仍保留旧路径，避免一次性打断兼容性
+
 ## 快速开始
 
 运行测试：

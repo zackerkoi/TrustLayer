@@ -249,6 +249,7 @@ class ToolDescriptor:
 - `/v1/mcp/invoke` 已经可以统一调用 `ingress` 和 `egress` 工具
 - 当前 `fetch` 仍然只允许 `ingress` 工具，作为兼容入口保留
 - `egress` 工具已经能通过 unified invoke 进入 egress pipeline
+- 旧的 `/v1/egress/check` 也已经开始在 HTTP 层优先复用 unified invoke
 
 也就是说，**统一底座和 unified invoke 都已经开始成形，但底层策略引擎还没有完全收口。**
 
@@ -271,6 +272,7 @@ class ToolDescriptor:
 ## 下一步演进
 
 1. 继续把更多 egress 动作收进 unified broker
-2. 让 `fetch` 逐步退成兼容入口，主路径转向 `invoke`
-3. 统一更多 tool-level 审计字段和审批视图
-4. 再决定是否把 HTTP 接口彻底收口到 `POST /v1/mcp/invoke`
+2. 让更多旧调用路径优先复用 `invoke`
+3. 让 `fetch` 逐步退成兼容入口，主路径转向 `invoke`
+4. 统一更多 tool-level 审计字段和审批视图
+5. 再决定是否把 HTTP 接口彻底收口到 `POST /v1/mcp/invoke`

@@ -423,6 +423,63 @@ class GatewayScenariosTest(unittest.TestCase):
         self.assertEqual(body["items"][0]["decision"], "block")
         self.assertIn("approval_summary", body["items"][0])
 
+    def test_wsgi_egress_check_uses_unified_invoke_when_matching_egress_tool_exists(self) -> None:
+        app = create_app(self.service, mcp_gateway=make_mcp_gateway(self.service))
+
+        status, body = call_wsgi(
+            app,
+            "POST",
+            "/v1/egress/check",
+            {
+                "tenant_id": "demo",
+                "session_id": "sess_egress_via_legacy_route",
+                "destination": "https://new-destination.example/hooks",
+                "destination_type": "webhook",
+                "payload": "Contact alice@example.com for the next update.",
+            },
+        )
+
+        self.assertTrue(str(status).startswith("200"))
+        self.assertTrue(body["request_id"].startswith("mcpreq_"))
+        self.assertEqual(body["decision"], "review_required")
+        self.assertEqual(body["egress"]["destination_type"], "webhook")
+        timeline = self.service.timeline("sess_egress_via_legacy_route")
+        self.assertEqual(
+            [event["event_type"] for event in timeline],
+            [
+                "mcp_tool_invoked",
+                "mcp_tool_routed",
+                "egress_attempted",
+                "destination_new_domain",
+                "egress_scanned",
+                "policy_matched",
+                "policy_matched",
+                "egress_review_required",
+            ],
+        )
+
+    def test_wsgi_egress_check_falls_back_when_no_matching_egress_tool_exists(self) -> None:
+        app = create_app(self.service, mcp_gateway=make_mcp_gateway(self.service))
+
+        status, body = call_wsgi(
+            app,
+            "POST",
+            "/v1/egress/check",
+            {
+                "tenant_id": "demo",
+                "session_id": "sess_egress_legacy_fallback",
+                "destination": "mailto:ops@example.com",
+                "destination_type": "email",
+                "payload": "Contact alice@example.com for the next update.",
+            },
+        )
+
+        self.assertTrue(str(status).startswith("200"))
+        self.assertTrue(body["request_id"].startswith("req_"))
+        timeline = self.service.timeline("sess_egress_legacy_fallback")
+        self.assertEqual(timeline[0]["event_type"], "egress_attempted")
+        self.assertNotIn("mcp_tool_invoked", [event["event_type"] for event in timeline])
+
     def test_html_approval_queue_page_renders_prioritized_items(self) -> None:
         app = create_app(self.service)
         call_wsgi(
