@@ -8,23 +8,8 @@ from typing import Any
 from urllib.parse import urlparse
 
 from .audit import AuditStore
-from .policy import PolicyConfig
+from .policy import DetectorRule, PolicyConfig, PolicySnapshot, PolicyStore
 from .sanitizer import VisibleTextExtractor
-
-
-SECRET_PATTERNS = [
-    re.compile(r"\bsk_(test|live)_[A-Za-z0-9]{8,}\b"),
-    re.compile(r"\bghp_[A-Za-z0-9]{8,}\b"),
-    re.compile(r"AWS_SECRET_ACCESS_KEY\s*=\s*[A-Za-z0-9/+=]{12,}"),
-    re.compile(r"\bAKIA[0-9A-Z]{8,}\b"),
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),
-]
-EMAIL_PATTERN = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b")
-PHONE_PATTERN = re.compile(r"\b1[3-9]\d{9}\b")
-
-MAX_VISIBLE_EXCERPT = 280
-MAX_CHUNK_SIZE = 280
-MAX_CHUNKS = 3
 
 
 @dataclass(frozen=True)
@@ -37,9 +22,16 @@ class DecisionResult:
 
 
 class DefenseGatewayService:
-    def __init__(self, audit_store: AuditStore, policy: PolicyConfig | None = None) -> None:
+    def __init__(
+        self,
+        audit_store: AuditStore,
+        policy: PolicyConfig | None = None,
+        policy_store: PolicyStore | None = None,
+    ) -> None:
         self.audit = audit_store
-        self.policy = policy or PolicyConfig()
+        self.policy_store = policy_store or PolicyStore(audit_store.db_path)
+        if policy is not None:
+            self.policy_store.apply_config(policy)
 
     def sanitize_ingress(
         self,
@@ -53,6 +45,9 @@ class DefenseGatewayService:
         audit_metadata: dict[str, Any] | None = None,
     ) -> DecisionResult:
         request_id = request_id or self._request_id()
+        snapshot = self.policy_store.snapshot()
+        source_policy = snapshot.source_policy_for(source_type)
+
         self.audit.append_event(
             session_id=session_id,
             request_id=request_id,
@@ -65,25 +60,29 @@ class DefenseGatewayService:
             ),
         )
 
-        visible_text, removed_regions = self._sanitize_content(source_type, content)
-        risk_flags = self._ingress_risk_flags(source_type, removed_regions, content)
-        matched_policies = ["ingress_default_allow_sanitized"]
-        if "hidden_content" in risk_flags:
-            matched_policies.append("ingress_hidden_content_tag")
-        if "oversized_text" in risk_flags:
-            matched_policies.append("ingress_oversized_trim")
-        if "tool_output_untrusted" in risk_flags:
-            matched_policies.append("ingress_tool_output_untrusted")
+        visible_text, removed_regions = self._sanitize_content(source_policy.extractor_kind, content)
+        risk_flags, matched_policies = self._evaluate_ingress_rules(
+            snapshot=snapshot,
+            source_type=source_type,
+            raw_content=content,
+            visible_text=visible_text,
+            removed_regions=removed_regions,
+        )
 
+        default_policy_id = str(snapshot.setting("ingress_default_policy_id", ""))
+        if default_policy_id:
+            matched_policies = [default_policy_id, *matched_policies]
+
+        max_visible_excerpt = int(snapshot.setting("max_visible_excerpt", len(visible_text) or 0))
         payload = {
             "source": {
                 "type": source_type,
                 "origin": origin,
-                "trust_level": "untrusted" if source_type != "internal" else "trusted",
+                "trust_level": source_policy.trust_level,
             },
             "content": {
-                "visible_excerpt": visible_text[:MAX_VISIBLE_EXCERPT],
-                "selected_chunks": self._chunk_text(visible_text),
+                "visible_excerpt": visible_text[:max_visible_excerpt],
+                "selected_chunks": self._chunk_text(visible_text, snapshot),
                 "removed_regions": removed_regions,
             },
         }
@@ -92,9 +91,9 @@ class DefenseGatewayService:
             request_id=request_id,
             tenant_id=tenant_id,
             event_type="policy_matched",
-            decision="allow_sanitized",
-            policy_id=matched_policies[0],
-            summary="Ingress sanitized by default policy",
+            decision=str(snapshot.setting("ingress_default_decision", "allow_sanitized")),
+            policy_id=default_policy_id or None,
+            summary="Ingress sanitized by policy store",
             metadata=self._merge_audit_metadata(
                 {"matched_policies": matched_policies},
                 audit_metadata,
@@ -105,7 +104,7 @@ class DefenseGatewayService:
             request_id=request_id,
             tenant_id=tenant_id,
             event_type="source_sanitized",
-            decision="allow_sanitized",
+            decision=str(snapshot.setting("ingress_default_decision", "allow_sanitized")),
             summary=f"Sanitized {source_type}",
             metadata=self._merge_audit_metadata(
                 {
@@ -120,7 +119,7 @@ class DefenseGatewayService:
         )
         return DecisionResult(
             request_id=request_id,
-            decision="allow_sanitized",
+            decision=str(snapshot.setting("ingress_default_decision", "allow_sanitized")),
             risk_flags=risk_flags,
             payload=payload,
             matched_policies=matched_policies,
@@ -138,6 +137,7 @@ class DefenseGatewayService:
         audit_metadata: dict[str, Any] | None = None,
     ) -> DecisionResult:
         request_id = request_id or self._request_id()
+        snapshot = self.policy_store.snapshot()
         destination_host = (urlparse(destination).hostname or destination).lower()
         self.audit.append_event(
             session_id=session_id,
@@ -155,43 +155,33 @@ class DefenseGatewayService:
             ),
         )
 
-        risk_flags: list[str] = []
-        matched_policies: list[str] = []
+        context = {
+            "tenant_id": tenant_id,
+            "session_id": session_id,
+            "destination": destination,
+            "destination_host": destination_host,
+            "destination_type": destination_type,
+            "payload": payload,
+        }
+        risk_flags, matched_policies, triggered_rules = self._evaluate_egress_rules(snapshot, context)
 
-        if self._contains_secret(payload):
-            risk_flags.append("secret_detected")
-            matched_policies.append("egress_secret_block")
-        if self._contains_pii(payload):
-            risk_flags.append("pii_detected")
-            matched_policies.append("egress_pii_review")
-        if len(payload) > self.policy.egress_oversized_threshold:
-            risk_flags.append("payload_oversized")
-            matched_policies.append("egress_large_payload_review")
+        for rule in triggered_rules:
+            if rule.event_type:
+                summary = rule.summary_template.format(**context) if rule.summary_template else f"Matched {rule.rule_id}"
+                self.audit.append_event(
+                    session_id=session_id,
+                    request_id=request_id,
+                    tenant_id=tenant_id,
+                    event_type=rule.event_type,
+                    summary=summary,
+                    metadata=self._merge_audit_metadata(
+                        {"destination_host": destination_host},
+                        audit_metadata,
+                    ),
+                )
 
-        is_new_domain = (
-            destination_host not in self.policy.allowed_destination_hosts
-            and not self.audit.has_seen_destination(tenant_id, destination_host)
-        )
-        if is_new_domain:
-            risk_flags.append("new_domain")
-            matched_policies.append("egress_new_domain_review")
-            self.audit.append_event(
-                session_id=session_id,
-                request_id=request_id,
-                tenant_id=tenant_id,
-                event_type="destination_new_domain",
-                summary=f"First-time destination {destination_host}",
-                metadata=self._merge_audit_metadata(
-                    {"destination_host": destination_host},
-                    audit_metadata,
-                ),
-            )
-
-        decision = "allow"
-        if "secret_detected" in risk_flags:
-            decision = "block"
-        elif any(flag in risk_flags for flag in ("pii_detected", "new_domain", "payload_oversized")):
-            decision = "review_required"
+        decision_rule = snapshot.decision_rule_for("egress", risk_flags)
+        decision = decision_rule.decision
 
         self.audit.append_event(
             session_id=session_id,
@@ -224,12 +214,8 @@ class DefenseGatewayService:
                 ),
             )
 
-        final_event = {
-            "allow": "egress_allowed",
-            "block": "egress_blocked",
-            "review_required": "egress_review_required",
-        }[decision]
         approval_summary = self._approval_summary(
+            snapshot=snapshot,
             decision=decision,
             destination_host=destination_host,
             risk_flags=risk_flags,
@@ -238,7 +224,7 @@ class DefenseGatewayService:
             session_id=session_id,
             request_id=request_id,
             tenant_id=tenant_id,
-            event_type=final_event,
+            event_type=decision_rule.event_type,
             decision=decision,
             summary=f"Egress decision: {decision}",
             metadata=self._merge_audit_metadata(
@@ -278,47 +264,111 @@ class DefenseGatewayService:
         ]
 
     def approval_queue(self, tenant_id: str, limit: int = 20) -> list[dict[str, Any]]:
-        return self.audit.approval_queue(tenant_id, limit=limit)
+        snapshot = self.policy_store.snapshot()
+        priority = {
+            str(key): int(value)
+            for key, value in dict(snapshot.setting("approval_priority", {})).items()
+        }
+        event_types = [str(item) for item in snapshot.setting("approval_event_types", [])]
+        return self.audit.approval_queue(
+            tenant_id,
+            event_types=event_types,
+            priority=priority,
+            limit=limit,
+        )
 
-    def _sanitize_content(self, source_type: str, content: str) -> tuple[str, list[str]]:
-        if source_type in {"web_page", "email_html"}:
+    def _sanitize_content(self, extractor_kind: str, content: str) -> tuple[str, list[str]]:
+        if extractor_kind == "visible_text":
             extractor = VisibleTextExtractor()
             return extractor.extract(content)
         return self._normalize_text(content), []
 
-    def _ingress_risk_flags(
+    def _evaluate_ingress_rules(
         self,
+        *,
+        snapshot: PolicySnapshot,
         source_type: str,
-        removed_regions: list[str],
         raw_content: str,
-    ) -> list[str]:
-        risk_flags: list[str] = ["external_origin"]
-        if removed_regions:
-            risk_flags.append("hidden_content")
-        if len(raw_content) > self.policy.ingress_oversized_threshold:
-            risk_flags.append("oversized_text")
-        if source_type == "mcp_response":
-            risk_flags.append("tool_output_untrusted")
-        return sorted(set(risk_flags))
+        visible_text: str,
+        removed_regions: list[str],
+    ) -> tuple[list[str], list[str]]:
+        source_policy = snapshot.source_policy_for(source_type)
+        flags = list(source_policy.static_risk_flags)
+        matched_policies: list[str] = []
+        context = {
+            "source_type": source_type,
+            "raw_content": raw_content,
+            "visible_text": visible_text,
+            "removed_regions": removed_regions,
+        }
+        for rule in snapshot.detector_rules_for("ingress"):
+            if self._rule_matches(rule, context, snapshot):
+                flags.append(rule.flag_name)
+                matched_policies.append(rule.policy_id)
+        return sorted(set(flags)), self._dedupe(matched_policies)
 
-    def _chunk_text(self, text: str) -> list[str]:
+    def _evaluate_egress_rules(
+        self,
+        snapshot: PolicySnapshot,
+        context: dict[str, Any],
+    ) -> tuple[list[str], list[str], list[DetectorRule]]:
+        flags: list[str] = []
+        matched_policies: list[str] = []
+        triggered_rules: list[DetectorRule] = []
+        for rule in snapshot.detector_rules_for("egress"):
+            if self._rule_matches(rule, context, snapshot):
+                flags.append(rule.flag_name)
+                matched_policies.append(rule.policy_id)
+                triggered_rules.append(rule)
+        return sorted(set(flags)), self._dedupe(matched_policies), triggered_rules
+
+    def _rule_matches(
+        self,
+        rule: DetectorRule,
+        context: dict[str, Any],
+        snapshot: PolicySnapshot,
+    ) -> bool:
+        if rule.detector_kind == "removed_region_present":
+            return bool(context.get("removed_regions"))
+        if rule.detector_kind == "text_length_over_threshold":
+            target_value = str(context.get(rule.target or "", ""))
+            threshold = int(snapshot.setting(str(rule.threshold_setting), 0))
+            return len(target_value) > threshold
+        if rule.detector_kind == "source_type_equals":
+            return str(context.get("source_type")) == str(rule.expected_value)
+        if rule.detector_kind == "regex":
+            target_value = str(context.get(rule.target or "", ""))
+            return bool(re.search(str(rule.pattern), target_value))
+        if rule.detector_kind == "new_destination_host":
+            destination_host = str(context.get("destination_host", "")).lower()
+            allowed_hosts = {
+                str(host).lower()
+                for host in snapshot.setting("allowed_destination_hosts", [])
+            }
+            if destination_host in allowed_hosts:
+                return False
+            seen_event_types = [str(item) for item in snapshot.setting("seen_destination_event_types", [])]
+            return not self.audit.has_seen_destination(
+                str(context["tenant_id"]),
+                destination_host,
+                event_types=seen_event_types,
+            )
+        raise KeyError(f"unsupported_detector_kind:{rule.detector_kind}")
+
+    def _chunk_text(self, text: str, snapshot: PolicySnapshot) -> list[str]:
         normalized = self._normalize_text(text)
         if not normalized:
             return []
+        max_chunk_size = int(snapshot.setting("max_chunk_size", len(normalized)))
+        max_chunks = int(snapshot.setting("max_chunks", 1))
         chunks = [
-            normalized[i : i + MAX_CHUNK_SIZE]
-            for i in range(0, len(normalized), MAX_CHUNK_SIZE)
+            normalized[i : i + max_chunk_size]
+            for i in range(0, len(normalized), max_chunk_size)
         ]
-        return chunks[:MAX_CHUNKS]
+        return chunks[:max_chunks]
 
     def _normalize_text(self, value: str) -> str:
         return " ".join(value.split())
-
-    def _contains_secret(self, payload: str) -> bool:
-        return any(pattern.search(payload) for pattern in SECRET_PATTERNS)
-
-    def _contains_pii(self, payload: str) -> bool:
-        return bool(EMAIL_PATTERN.search(payload) or PHONE_PATTERN.search(payload))
 
     def _hash(self, payload: str) -> str:
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()
@@ -329,6 +379,7 @@ class DefenseGatewayService:
     def _approval_summary(
         self,
         *,
+        snapshot: PolicySnapshot,
         decision: str,
         destination_host: str,
         risk_flags: list[str],
@@ -337,14 +388,10 @@ class DefenseGatewayService:
             return f"Allowed outbound request to {destination_host}."
 
         reasons: list[str] = []
-        if "secret_detected" in risk_flags:
-            reasons.append("contains secret material")
-        if "pii_detected" in risk_flags:
-            reasons.append("contains PII")
-        if "new_domain" in risk_flags:
-            reasons.append("targets a new destination")
-        if "payload_oversized" in risk_flags:
-            reasons.append("payload is oversized")
+        for flag in risk_flags:
+            text = snapshot.approval_reason(flag)
+            if text:
+                reasons.append(text)
 
         reason_text = ", ".join(reasons) if reasons else "risk conditions matched"
         prefix = "Blocked" if decision == "block" else "Review required"
@@ -360,3 +407,13 @@ class DefenseGatewayService:
         merged = dict(extra)
         merged.update(base)
         return merged
+
+    def _dedupe(self, values: list[str]) -> list[str]:
+        seen: set[str] = set()
+        ordered: list[str] = []
+        for value in values:
+            if value in seen:
+                continue
+            seen.add(value)
+            ordered.append(value)
+        return ordered

@@ -344,6 +344,53 @@ class GatewayScenariosTest(unittest.TestCase):
         self.assertEqual(config.egress_oversized_threshold, 45)
         self.assertIn("configured.example", config.allowed_destination_hosts)
 
+    def test_full_policy_document_from_database_can_replace_dlp_pattern(self) -> None:
+        config_path = Path(__file__).resolve().parents[1] / "config" / "policy.example.json"
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+        document["detector_rules"] = [
+            rule
+            for rule in document["detector_rules"]
+            if not (rule["direction"] == "egress" and rule["flag_name"] == "secret_detected")
+        ]
+        document["detector_rules"].append(
+            {
+                "rule_id": "egress_secret_custom",
+                "direction": "egress",
+                "detector_kind": "regex",
+                "target": "payload",
+                "pattern": "TEAMSECRET-[A-Z0-9]{6,}",
+                "flag_name": "secret_detected",
+                "policy_id": "egress_secret_block",
+                "decision": "block",
+            }
+        )
+        document["approval_summary_rules"]["secret_detected"] = "contains team secret material"
+
+        service = DefenseGatewayService(
+            AuditStore(Path(self.temp_dir.name) / "audit-policy-doc.sqlite3"),
+            policy=PolicyConfig(document=document),
+        )
+
+        custom_secret = service.check_egress(
+            tenant_id="demo",
+            session_id="sess_policy_doc_custom",
+            destination="https://hooks.example.net/collect",
+            destination_type="webhook",
+            payload="Leak TEAMSECRET-ABC12345 immediately.",
+        )
+        github_token = service.check_egress(
+            tenant_id="demo",
+            session_id="sess_policy_doc_default",
+            destination="https://second-hooks.example.net/collect",
+            destination_type="webhook",
+            payload="Leak ghp_ABCDEF1234567890 immediately.",
+        )
+
+        self.assertEqual(custom_secret.decision, "block")
+        self.assertIn("team secret material", custom_secret.payload["approval_summary"].lower())
+        self.assertEqual(github_token.decision, "review_required")
+        self.assertNotIn("secret_detected", github_token.risk_flags)
+
     def test_replay_formatter_emits_human_readable_timeline(self) -> None:
         self.service.sanitize_ingress(
             tenant_id="demo",

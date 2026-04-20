@@ -120,16 +120,24 @@ class AuditStore:
             for row in rows
         ]
 
-    def has_seen_destination(self, tenant_id: str, destination_host: str) -> bool:
+    def has_seen_destination(
+        self,
+        tenant_id: str,
+        destination_host: str,
+        event_types: list[str],
+    ) -> bool:
+        if not event_types:
+            return False
+        placeholders = ", ".join("?" for _ in event_types)
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT metadata_json
                 FROM events
                 WHERE tenant_id = ?
-                  AND event_type IN ('egress_allowed', 'egress_review_required', 'egress_blocked')
+                  AND event_type IN ({placeholders})
                 """,
-                (tenant_id,),
+                (tenant_id, *event_types),
             ).fetchall()
         for row in rows:
             metadata = json.loads(row["metadata_json"])
@@ -137,17 +145,27 @@ class AuditStore:
                 return True
         return False
 
-    def approval_queue(self, tenant_id: str, limit: int = 20) -> list[dict[str, Any]]:
+    def approval_queue(
+        self,
+        tenant_id: str,
+        *,
+        event_types: list[str],
+        priority: dict[str, int],
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        if not event_types:
+            return []
+        placeholders = ", ".join("?" for _ in event_types)
         with self._connect() as conn:
             rows = conn.execute(
-                """
+                f"""
                 SELECT session_id, request_id, event_type, decision, summary, metadata_json, created_at
                 FROM events
                 WHERE tenant_id = ?
-                  AND event_type IN ('egress_review_required', 'egress_blocked')
+                  AND event_type IN ({placeholders})
                 ORDER BY rowid DESC
                 """,
-                (tenant_id,),
+                (tenant_id, *event_types),
             ).fetchall()
 
         items: list[dict[str, Any]] = []
@@ -167,6 +185,5 @@ class AuditStore:
                 }
             )
 
-        priority = {"block": 0, "review_required": 1}
         items.sort(key=lambda item: (priority.get(item["decision"], 99), item["created_at"], item["request_id"]))
         return items[:limit]

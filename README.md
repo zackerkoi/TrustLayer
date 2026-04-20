@@ -34,6 +34,14 @@ cd TrustLayer
 POLICY_FILE=config/policy.example.json bash scripts/deploy-local.sh
 ```
 
+当前这份策略文件不再只是阈值样例，而是一份完整的数据库策略包。启动时会先导入 SQLite，再由运行时从库里读取：
+
+- `policy_settings`
+- `source_policies`
+- `detector_rules`
+- `decision_rules`
+- `approval_summary_rules`
+
 运行测试：
 
 ```bash

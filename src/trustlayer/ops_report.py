@@ -7,8 +7,11 @@ from collections import Counter
 from pathlib import Path
 from typing import Any
 
+from .policy import PolicyStore
+
 
 def build_ops_report(db_path: str | Path) -> dict[str, Any]:
+    snapshot = PolicyStore(db_path).snapshot()
     conn = sqlite3.connect(str(db_path))
     conn.row_factory = sqlite3.Row
     rows = conn.execute(
@@ -25,12 +28,8 @@ def build_ops_report(db_path: str | Path) -> dict[str, Any]:
     event_counts = Counter()
     decision_counts = Counter()
     sessions = set()
-    signal_event_types = {
-        "source_sanitized",
-        "egress_allowed",
-        "egress_review_required",
-        "egress_blocked",
-    }
+    signal_event_types = {str(item) for item in snapshot.setting("ops_signal_event_types", [])}
+    destination_event_types = {str(item) for item in snapshot.setting("ops_destination_event_types", [])}
 
     for row in rows:
         event_counts[row["event_type"]] += 1
@@ -41,8 +40,8 @@ def build_ops_report(db_path: str | Path) -> dict[str, Any]:
                 decision_counts[row["decision"]] += 1
             for flag in metadata.get("risk_flags", []):
                 risk_flags[str(flag)] += 1
-            if metadata.get("destination_host"):
-                destination_hosts[str(metadata["destination_host"])] += 1
+        if row["event_type"] in destination_event_types and metadata.get("destination_host"):
+            destination_hosts[str(metadata["destination_host"])] += 1
 
     return {
         "summary": {

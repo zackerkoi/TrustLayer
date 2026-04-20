@@ -16,29 +16,33 @@
 
 ## 当前可配规则
 
-当前代码里真正能直接配置的运行时项，只有这三个：
+现在的规则已经不再靠代码常量驱动，而是落在 SQLite 策略表里。
 
-```json
-{
-  "ingress_oversized_threshold": 600,
-  "egress_oversized_threshold": 500,
-  "allowed_destination_hosts": [
-    "safe.example"
-  ]
-}
-```
-
-文件位置参考：
+默认策略包参考：
 [policy.example.json](../config/policy.example.json)
 
-这三个配置分别控制：
+运行时会先把这份策略文档导入数据库，再由服务读取。
+
+当前可配内容分成五类：
+
+1. `policy_settings`
+   阈值、allowlist、审批优先级、运营报表统计口径
+2. `source_policies`
+   不同 `source_type` 的 trust level、抽取方式和静态风险标签
+3. `detector_rules`
+   净化和 DLP 检测规则，例如正则、阈值、新域名判断
+4. `decision_rules`
+   命中哪些 flag 后走 `allow / review_required / block`
+5. `approval_summary_rules`
+   审批摘要中每个风险标签怎么翻译成人类可读说明
+
+如果只看日常最常调的，还是这几项：
 
 - `ingress_oversized_threshold`
-  输入内容多长开始被标成 `oversized_text`
 - `egress_oversized_threshold`
-  外发 payload 多大开始被标成 `payload_oversized`
 - `allowed_destination_hosts`
-  哪些目的地不按“首次出现新域名”处理
+- `approval_priority`
+- `ops_signal_event_types`
 
 ## 规则怎么配
 
@@ -60,7 +64,8 @@
 
 1. 先改 ingress 阈值
 2. 再看 egress 阈值
-3. 最后再动 allowlist
+3. 再动 allowlist
+4. 最后才改 detector / decision 级规则
 
 这样做的好处是，出了误报或漏报，能更容易定位是：
 

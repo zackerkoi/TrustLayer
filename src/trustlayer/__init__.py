@@ -9,8 +9,7 @@ from .mcp_gateway import (
     ToolDescriptor,
     build_default_mcp_gateway,
 )
-from .ops_report import build_ops_report, format_ops_report
-from .policy import PolicyConfig
+from .policy import PolicyConfig, PolicyStore
 from .replay import format_timeline
 from .service import DefenseGatewayService
 
@@ -21,12 +20,11 @@ __all__ = [
     "MCPGatewayService",
     "MCPToolResult",
     "PolicyConfig",
+    "PolicyStore",
     "RemoteJSONRAGAdapter",
     "RemoteWebFetchAdapter",
     "ToolDescriptor",
-    "build_ops_report",
     "build_default_mcp_gateway",
     "create_app",
-    "format_ops_report",
     "format_timeline",
 ]

@@ -1,7 +1,244 @@
 {
-  "ingress_oversized_threshold": 600,
-  "egress_oversized_threshold": 500,
-  "allowed_destination_hosts": [
-    "safe.example"
-  ]
+  "settings": {
+    "ingress_default_decision": "allow_sanitized",
+    "ingress_default_policy_id": "ingress_default_allow_sanitized",
+    "ingress_oversized_threshold": 600,
+    "egress_oversized_threshold": 500,
+    "allowed_destination_hosts": [
+      "safe.example"
+    ],
+    "max_visible_excerpt": 280,
+    "max_chunk_size": 280,
+    "max_chunks": 3,
+    "approval_priority": {
+      "block": 0,
+      "review_required": 1
+    },
+    "approval_event_types": [
+      "egress_review_required",
+      "egress_blocked"
+    ],
+    "seen_destination_event_types": [
+      "egress_allowed",
+      "egress_review_required",
+      "egress_blocked"
+    ],
+    "ops_signal_event_types": [
+      "source_sanitized",
+      "egress_allowed",
+      "egress_review_required",
+      "egress_blocked"
+    ],
+    "ops_destination_event_types": [
+      "egress_allowed",
+      "egress_review_required",
+      "egress_blocked"
+    ]
+  },
+  "source_policies": [
+    {
+      "source_type": "__default__",
+      "trust_level": "untrusted",
+      "extractor_kind": "plain_text",
+      "static_risk_flags": [
+        "external_origin"
+      ]
+    },
+    {
+      "source_type": "web_page",
+      "trust_level": "untrusted",
+      "extractor_kind": "visible_text",
+      "static_risk_flags": [
+        "external_origin"
+      ]
+    },
+    {
+      "source_type": "email_html",
+      "trust_level": "untrusted",
+      "extractor_kind": "visible_text",
+      "static_risk_flags": [
+        "external_origin"
+      ]
+    },
+    {
+      "source_type": "rag_chunk",
+      "trust_level": "untrusted",
+      "extractor_kind": "plain_text",
+      "static_risk_flags": [
+        "external_origin"
+      ]
+    },
+    {
+      "source_type": "mcp_response",
+      "trust_level": "untrusted",
+      "extractor_kind": "plain_text",
+      "static_risk_flags": [
+        "external_origin"
+      ]
+    },
+    {
+      "source_type": "internal",
+      "trust_level": "trusted",
+      "extractor_kind": "plain_text",
+      "static_risk_flags": []
+    }
+  ],
+  "detector_rules": [
+    {
+      "rule_id": "ingress_hidden_content",
+      "direction": "ingress",
+      "detector_kind": "removed_region_present",
+      "flag_name": "hidden_content",
+      "policy_id": "ingress_hidden_content_tag",
+      "decision": "allow_sanitized"
+    },
+    {
+      "rule_id": "ingress_oversized_text",
+      "direction": "ingress",
+      "detector_kind": "text_length_over_threshold",
+      "target": "raw_content",
+      "threshold_setting": "ingress_oversized_threshold",
+      "flag_name": "oversized_text",
+      "policy_id": "ingress_oversized_trim",
+      "decision": "allow_sanitized"
+    },
+    {
+      "rule_id": "ingress_tool_output_untrusted",
+      "direction": "ingress",
+      "detector_kind": "source_type_equals",
+      "expected_value": "mcp_response",
+      "flag_name": "tool_output_untrusted",
+      "policy_id": "ingress_tool_output_untrusted",
+      "decision": "allow_sanitized"
+    },
+    {
+      "rule_id": "egress_secret_openai",
+      "direction": "egress",
+      "detector_kind": "regex",
+      "target": "payload",
+      "pattern": "\\bsk_(test|live)_[A-Za-z0-9]{8,}\\b",
+      "flag_name": "secret_detected",
+      "policy_id": "egress_secret_block",
+      "decision": "block"
+    },
+    {
+      "rule_id": "egress_secret_github",
+      "direction": "egress",
+      "detector_kind": "regex",
+      "target": "payload",
+      "pattern": "\\bghp_[A-Za-z0-9]{8,}\\b",
+      "flag_name": "secret_detected",
+      "policy_id": "egress_secret_block",
+      "decision": "block"
+    },
+    {
+      "rule_id": "egress_secret_aws_secret",
+      "direction": "egress",
+      "detector_kind": "regex",
+      "target": "payload",
+      "pattern": "AWS_SECRET_ACCESS_KEY\\s*=\\s*[A-Za-z0-9/+=]{12,}",
+      "flag_name": "secret_detected",
+      "policy_id": "egress_secret_block",
+      "decision": "block"
+    },
+    {
+      "rule_id": "egress_secret_aws_access_key",
+      "direction": "egress",
+      "detector_kind": "regex",
+      "target": "payload",
+      "pattern": "\\bAKIA[0-9A-Z]{8,}\\b",
+      "flag_name": "secret_detected",
+      "policy_id": "egress_secret_block",
+      "decision": "block"
+    },
+    {
+      "rule_id": "egress_secret_private_key",
+      "direction": "egress",
+      "detector_kind": "regex",
+      "target": "payload",
+      "pattern": "-----BEGIN [A-Z ]*PRIVATE KEY-----",
+      "flag_name": "secret_detected",
+      "policy_id": "egress_secret_block",
+      "decision": "block"
+    },
+    {
+      "rule_id": "egress_pii_email",
+      "direction": "egress",
+      "detector_kind": "regex",
+      "target": "payload",
+      "pattern": "\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b",
+      "flag_name": "pii_detected",
+      "policy_id": "egress_pii_review",
+      "decision": "review_required"
+    },
+    {
+      "rule_id": "egress_pii_phone_cn",
+      "direction": "egress",
+      "detector_kind": "regex",
+      "target": "payload",
+      "pattern": "\\b1[3-9]\\d{9}\\b",
+      "flag_name": "pii_detected",
+      "policy_id": "egress_pii_review",
+      "decision": "review_required"
+    },
+    {
+      "rule_id": "egress_payload_oversized",
+      "direction": "egress",
+      "detector_kind": "text_length_over_threshold",
+      "target": "payload",
+      "threshold_setting": "egress_oversized_threshold",
+      "flag_name": "payload_oversized",
+      "policy_id": "egress_large_payload_review",
+      "decision": "review_required"
+    },
+    {
+      "rule_id": "egress_new_domain",
+      "direction": "egress",
+      "detector_kind": "new_destination_host",
+      "flag_name": "new_domain",
+      "policy_id": "egress_new_domain_review",
+      "decision": "review_required",
+      "event_type": "destination_new_domain",
+      "summary_template": "First-time destination {destination_host}"
+    }
+  ],
+  "decision_rules": [
+    {
+      "rule_id": "egress_secret_block_decision",
+      "direction": "egress",
+      "decision": "block",
+      "event_type": "egress_blocked",
+      "when_any_flags": [
+        "secret_detected"
+      ],
+      "priority": 10
+    },
+    {
+      "rule_id": "egress_review_decision",
+      "direction": "egress",
+      "decision": "review_required",
+      "event_type": "egress_review_required",
+      "when_any_flags": [
+        "pii_detected",
+        "new_domain",
+        "payload_oversized"
+      ],
+      "priority": 20
+    },
+    {
+      "rule_id": "egress_allow_decision",
+      "direction": "egress",
+      "decision": "allow",
+      "event_type": "egress_allowed",
+      "when_any_flags": [],
+      "priority": 100,
+      "default_rule": true
+    }
+  ],
+  "approval_summary_rules": {
+    "new_domain": "targets a new destination",
+    "payload_oversized": "payload is oversized",
+    "pii_detected": "contains PII",
+    "secret_detected": "contains secret material"
+  }
 }
