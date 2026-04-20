@@ -57,6 +57,25 @@ PYTHONPATH=src python3 -m trustlayer.evaluation
 - `GET /approvals/queue?tenant_id=<tenant>`
 - `GET /healthz`
 
+默认 MCP 入口工具：
+
+- `remote_web_fetch`：通过真实远程 HTTP 抓取网页，并在返回给 Agent 前自动做 sanitize
+
+最小 fetch 示例：
+
+```bash
+curl -s http://127.0.0.1:8080/v1/mcp/tools/fetch \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tenant_id": "demo",
+    "session_id": "sess_remote_fetch",
+    "tool_name": "remote_web_fetch",
+    "arguments": {
+      "url": "https://example.com"
+    }
+  }'
+```
+
 ## 当前场景覆盖
 
 - 网页隐藏内容剥离

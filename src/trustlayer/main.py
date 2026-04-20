@@ -6,6 +6,7 @@ from wsgiref.simple_server import make_server
 
 from .app import create_app
 from .audit import AuditStore
+from .mcp_gateway import build_default_mcp_gateway
 from .policy import PolicyConfig
 from .service import DefenseGatewayService
 
@@ -30,7 +31,8 @@ def main() -> int:
     audit = AuditStore(args.db_path)
     policy = PolicyConfig.from_file(args.policy_file) if args.policy_file else None
     service = DefenseGatewayService(audit, policy=policy)
-    app = create_app(service)
+    mcp_gateway = build_default_mcp_gateway(service)
+    app = create_app(service, mcp_gateway=mcp_gateway)
 
     with make_server("127.0.0.1", args.port, app) as server:
         print(f"TrustLayer gateway listening on http://127.0.0.1:{args.port}", flush=True)

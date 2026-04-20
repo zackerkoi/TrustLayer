@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import urllib.request
 import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Protocol
@@ -71,6 +72,50 @@ class CallableMCPToolAdapter:
                 metadata=result.metadata,
             )
         return result
+
+
+class RemoteWebFetchAdapter:
+    def __init__(
+        self,
+        *,
+        name: str = "remote_web_fetch",
+        description: str = "Fetches a remote web page through TrustLayer MCP Gateway.",
+        timeout_seconds: int = 10,
+        max_bytes: int = 200_000,
+    ) -> None:
+        self._spec = MCPToolSpec(
+            name=name,
+            description=description,
+            source_type="web_page",
+            tags=("remote", "web"),
+        )
+        self.timeout_seconds = timeout_seconds
+        self.max_bytes = max_bytes
+
+    def spec(self) -> MCPToolSpec:
+        return self._spec
+
+    def fetch(self, arguments: dict[str, Any]) -> MCPToolResult:
+        url = str(arguments["url"])
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "TrustLayer-MCP-Gateway/0.1"},
+        )
+        with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            body = response.read(self.max_bytes)
+            charset = response.headers.get_content_charset() or "utf-8"
+            content = body.decode(charset, errors="ignore")
+            return MCPToolResult(
+                source_type="web_page",
+                origin=response.geturl(),
+                content=content,
+                metadata={
+                    "status_code": getattr(response, "status", None),
+                    "content_type": response.headers.get("Content-Type"),
+                    "fetched_url": url,
+                    "bytes_read": len(body),
+                },
+            )
 
 
 class MCPGatewayService:
@@ -155,3 +200,10 @@ class MCPGatewayService:
             "matched_policies": sanitized.matched_policies,
             "sanitized_content": sanitized.payload,
         }
+
+
+def build_default_mcp_gateway(defense_service: DefenseGatewayService) -> MCPGatewayService:
+    return MCPGatewayService(
+        defense_service,
+        tools=[RemoteWebFetchAdapter()],
+    )

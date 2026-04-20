@@ -41,6 +41,7 @@ flowchart LR
 
 1. 用 `MCPGatewayService` 做统一编排
 2. 用 `CallableMCPToolAdapter` 注册可被代理的外部工具
+3. 默认提供一个 `RemoteWebFetchAdapter`
 3. 每次 `fetch` 都先记录 `mcp_tool_invoked`
 4. 工具返回结果后记录 `mcp_tool_result`
 5. 再把结果交给已有 `sanitize_ingress`
@@ -70,6 +71,19 @@ class MCPGatewayService:
             content=tool_result.content,
         )
         return {...}
+```
+
+默认远程网页 adapter：
+
+```python
+class RemoteWebFetchAdapter:
+    def fetch(self, arguments: dict[str, Any]) -> MCPToolResult:
+        url = str(arguments["url"])
+        request = urllib.request.Request(
+            url,
+            headers={"User-Agent": "TrustLayer-MCP-Gateway/0.1"},
+        )
+        ...
 ```
 
 HTTP 接口在
@@ -102,6 +116,7 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 1. 工具列表能正确暴露
 2. `fetch` 后会自动经过 sanitize，并写入审计事件
 3. 未知工具会返回显式错误，而不是静默失败
+4. `remote_web_fetch` 可以通过真实 HTTP 获取链完成输入治理
 
 对应测试在：
 [test_gateway.py](../tests/test_gateway.py)
@@ -113,6 +128,13 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 - `test_mcp_gateway_lists_registered_tools`
 - `test_mcp_gateway_fetch_sanitizes_tool_output_and_records_mcp_audit_events`
 - `test_mcp_gateway_returns_unknown_tool_error`
+- `test_remote_web_fetch_adapter_sanitizes_live_http_source`
+
+其中最后一条不是只喂一段本地字符串，而是：
+
+- 启一个真实 HTTP fixture
+- 用 `remote_web_fetch` 拉取页面
+- 再验证隐藏内容是否被 `sanitize_ingress` 去掉
 
 ## 当前价值
 
@@ -121,6 +143,7 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 - TrustLayer 可以从“显式 sanitize API”往“统一取数入口”演进
 - 输入治理可以前移到工具获取层
 - 审计不只记录输入进入，还能记录“是谁拉来的”
+- 入口层已经不只是 mock adapter，而是能跑真实 remote fetch
 
 ## 当前限制
 
