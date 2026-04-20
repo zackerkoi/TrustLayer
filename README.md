@@ -71,7 +71,7 @@ curl -s http://127.0.0.1:8080/v1/mcp/tools/fetch \
     "session_id": "sess_remote_fetch",
     "tool_name": "remote_web_fetch",
     "arguments": {
-      "url": "https://example.com"
+      "url": "https://raw.githubusercontent.com/zackerkoi/TrustLayer/main/fixtures/remote_hidden_supplier.html"
     }
   }'
 ```

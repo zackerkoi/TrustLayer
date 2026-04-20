@@ -136,6 +136,17 @@ if method == "POST" and path == "/v1/mcp/tools/fetch":
 - 用 `remote_web_fetch` 拉取页面
 - 再验证隐藏内容是否被 `sanitize_ingress` 去掉
 
+另外，这版还实际跑过一条真正的 remote 验证：
+
+- 地址：
+  `https://raw.githubusercontent.com/zackerkoi/TrustLayer/main/fixtures/remote_hidden_supplier.html`
+- 返回决策：
+  `allow_sanitized`
+- 风险标签：
+  `external_origin + hidden_content`
+- 时间线：
+  `mcp_tool_invoked -> mcp_tool_result -> source_received -> policy_matched -> source_sanitized`
+
 ## 当前价值
 
 这一版 MCP Gateway 已经能证明：
