@@ -205,6 +205,7 @@ sequenceDiagram
 - 控制面元数据存储已经支持 `SQLite 开发 / PostgreSQL 生产` 双路径
 - 仓库里已经附了本地 PostgreSQL 真库验证脚本和 compose 文件
 - 审计回传链路已经拆成 `AuditForwarder -> AuditBus -> AuditConsumer -> Central Audit Storage`
+- HTTP 控制面已经提供 `publish / bind / sync / audit forward / audit consume` 这组最小接口
 
 ### 4. Policy Distribution Service
 
@@ -427,6 +428,11 @@ flowchart LR
 - Forwarder 异步发，避免影响主决策链
 - Bus 做解耦和削峰
 - 检测和存储分消费者处理
+
+当前代码状态再补一句：
+
+- 默认 Bus 后端是本地 SQLite，方便单机和集成测试
+- 启动参数已经支持 `kafka://broker/topic` 形态，作为生产总线接入骨架
 
 ## 指标体系
 
