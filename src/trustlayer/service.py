@@ -27,9 +27,13 @@ class DefenseGatewayService:
         audit_store: AuditStore,
         policy: PolicyConfig | None = None,
         policy_store: PolicyStore | None = None,
+        gateway_instance_id: str = "gw-local",
+        gateway_version: str = "0.1",
     ) -> None:
         self.audit = audit_store
         self.policy_store = policy_store or PolicyStore(audit_store.db_path)
+        self.gateway_instance_id = gateway_instance_id
+        self.gateway_version = gateway_version
         if policy is not None:
             self.policy_store.apply_config(policy)
 
@@ -57,6 +61,7 @@ class DefenseGatewayService:
             metadata=self._merge_audit_metadata(
                 {"source_type": source_type, "origin": origin},
                 audit_metadata,
+                snapshot=snapshot,
             ),
         )
 
@@ -97,6 +102,7 @@ class DefenseGatewayService:
             metadata=self._merge_audit_metadata(
                 {"matched_policies": matched_policies},
                 audit_metadata,
+                snapshot=snapshot,
             ),
         )
         self.audit.append_event(
@@ -115,6 +121,7 @@ class DefenseGatewayService:
                     "content_hash": self._hash(visible_text),
                 },
                 audit_metadata,
+                snapshot=snapshot,
             ),
         )
         return DecisionResult(
@@ -152,6 +159,7 @@ class DefenseGatewayService:
                     "destination_type": destination_type,
                 },
                 audit_metadata,
+                snapshot=snapshot,
             ),
         )
 
@@ -177,6 +185,7 @@ class DefenseGatewayService:
                     metadata=self._merge_audit_metadata(
                         {"destination_host": destination_host},
                         audit_metadata,
+                        snapshot=snapshot,
                     ),
                 )
 
@@ -197,6 +206,7 @@ class DefenseGatewayService:
                     "content_hash": self._hash(payload),
                 },
                 audit_metadata,
+                snapshot=snapshot,
             ),
         )
         for policy_id in matched_policies:
@@ -211,6 +221,7 @@ class DefenseGatewayService:
                 metadata=self._merge_audit_metadata(
                     {"destination_host": destination_host},
                     audit_metadata,
+                    snapshot=snapshot,
                 ),
             )
 
@@ -234,6 +245,7 @@ class DefenseGatewayService:
                     "approval_summary": approval_summary,
                 },
                 audit_metadata,
+                snapshot=snapshot,
             ),
         )
         return DecisionResult(
@@ -401,10 +413,18 @@ class DefenseGatewayService:
         self,
         base: dict[str, Any],
         extra: dict[str, Any] | None,
+        *,
+        snapshot: PolicySnapshot,
     ) -> dict[str, Any]:
+        merged = {
+            "gateway_instance_id": self.gateway_instance_id,
+            "gateway_version": self.gateway_version,
+            "policy_bundle_version": snapshot.setting("policy_bundle_version"),
+        }
         if not extra:
-            return base
-        merged = dict(extra)
+            merged.update(base)
+            return merged
+        merged.update(extra)
         merged.update(base)
         return merged
 

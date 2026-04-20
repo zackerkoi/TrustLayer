@@ -1,5 +1,6 @@
 {
   "settings": {
+    "policy_bundle_version": "default-bundle",
     "ingress_default_decision": "allow_sanitized",
     "ingress_default_policy_id": "ingress_default_allow_sanitized",
     "ingress_oversized_threshold": 600,

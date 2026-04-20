@@ -80,6 +80,7 @@ PYTHONPATH=src python3 -m trustlayer.ops_report --db-path audit.sqlite3
 运营规则、误报/漏报闭环和指标化方式，可参考：
 
 - [docs/15-operations-sop.md](docs/15-operations-sop.md)
+- [docs/16-production-control-plane-architecture.md](docs/16-production-control-plane-architecture.md)
 
 可用接口：
 
@@ -88,6 +89,11 @@ PYTHONPATH=src python3 -m trustlayer.ops_report --db-path audit.sqlite3
 - `GET /v1/mcp/tools`
 - `POST /v1/mcp/tools/fetch`
 - `POST /v1/mcp/invoke`
+- `POST /v1/control/policies/publish`
+- `POST /v1/control/tenants/bind`
+- `GET /v1/control/tenants/<tenant_id>/policy`
+- `POST /v1/control/distribution/sync`
+- `POST /v1/control/audit/forward`
 - `GET /v1/sessions/<session_id>/timeline`
 - `GET /v1/approvals/queue?tenant_id=<tenant>`
 - `GET /approvals/queue?tenant_id=<tenant>`
@@ -143,6 +149,44 @@ curl -s http://127.0.0.1:8080/v1/mcp/invoke \
       "payload": "Contact alice@example.com for the next update."
     }
   }'
+```
+
+最小控制面发布和分发示例：
+
+```bash
+curl -s http://127.0.0.1:8080/v1/control/policies/publish \
+  -H 'Content-Type: application/json' \
+  -d @<(python3 - <<'PY'
+import json
+from pathlib import Path
+
+document = json.loads(Path("config/policy.example.json").read_text(encoding="utf-8"))
+document["settings"]["allowed_destination_hosts"] = ["api.rollout.example"]
+print(json.dumps({
+    "created_by": "secops@example.com",
+    "change_summary": "Roll out a new allowlisted host.",
+    "document": document,
+}))
+PY
+)
+```
+
+```bash
+curl -s http://127.0.0.1:8080/v1/control/tenants/bind \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"demo","bundle_version":"<bundle_version>"}'
+```
+
+```bash
+curl -s http://127.0.0.1:8080/v1/control/distribution/sync \
+  -H 'Content-Type: application/json' \
+  -d '{"tenant_id":"demo","instance_id":"gw-local"}'
+```
+
+```bash
+curl -s http://127.0.0.1:8080/v1/control/audit/forward \
+  -H 'Content-Type: application/json' \
+  -d '{"batch_size":100}'
 ```
 
 ## 当前场景覆盖

@@ -31,7 +31,7 @@
    WSGI 接口、请求路径、最小集成方式与接口测试。
 
 6. [06-policy-config.md](06-policy-config.md)
-   外部策略配置：阈值、允许名单和服务注入方式。
+   数据库策略配置：策略表、规则加载、运行时快照与外置规则验证。
 
 7. [07-replay-cli.md](07-replay-cli.md)
    审计回放 CLI：按 session 输出人类可读时间线。
@@ -60,10 +60,13 @@
 15. [15-operations-sop.md](15-operations-sop.md)
    运营 SOP：规则配置、日常监控、误报/漏报处理与指标化运营。
 
+16. [16-production-control-plane-architecture.md](16-production-control-plane-architecture.md)
+   生产级控制面架构：规则中心、分发链路、日志回传、集中分析与响应控制。
+
 ## 当前状态
 
 - 基础设施已具备最小可运行版本
-- 当前测试总数：`50`
+- 当前测试总数：`53`
 - 当前全部通过
 - 下一开发顺序：
   1. 继续扩更真实的业务场景

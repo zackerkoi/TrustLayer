@@ -5,6 +5,8 @@ from html import escape
 from urllib.parse import parse_qs
 from typing import Any, Callable, Iterable
 
+from .audit_pipeline import AuditForwarder
+from .control_plane import ControlPlaneStore, PolicyDistributionService, RuleManagementService
 from .mcp_gateway import (
     MCPGatewayService,
     ToolDirectionNotSupportedError,
@@ -19,6 +21,10 @@ StartResponse = Callable[[str, list[tuple[str, str]]], None]
 def create_app(
     service: DefenseGatewayService,
     mcp_gateway: MCPGatewayService | None = None,
+    rule_management: RuleManagementService | None = None,
+    policy_distribution: PolicyDistributionService | None = None,
+    control_store: ControlPlaneStore | None = None,
+    audit_forwarder: AuditForwarder | None = None,
 ):
     def app(environ: dict[str, Any], start_response: StartResponse) -> Iterable[bytes]:
         method = environ.get("REQUEST_METHOD", "GET").upper()
@@ -186,6 +192,61 @@ def create_app(
                     direction=body["direction"],
                     arguments=body.get("arguments", {}),
                 )
+                return _json_response(start_response, 200, result)
+
+            if method == "POST" and path == "/v1/control/policies/publish":
+                if rule_management is None:
+                    return _json_response(start_response, 404, {"error": "control_plane_disabled"})
+                body = _read_json_body(environ)
+                result = rule_management.publish_bundle(
+                    document=body["document"],
+                    created_by=body["created_by"],
+                    change_summary=body["change_summary"],
+                )
+                return _json_response(start_response, 200, result)
+
+            if method == "POST" and path == "/v1/control/tenants/bind":
+                if rule_management is None:
+                    return _json_response(start_response, 404, {"error": "control_plane_disabled"})
+                body = _read_json_body(environ)
+                result = rule_management.bind_tenant(
+                    tenant_id=body["tenant_id"],
+                    bundle_version=body["bundle_version"],
+                )
+                return _json_response(start_response, 200, result)
+
+            if method == "GET" and path.startswith("/v1/control/tenants/") and path.endswith("/policy"):
+                if control_store is None:
+                    return _json_response(start_response, 404, {"error": "control_plane_disabled"})
+                tenant_id = path.split("/")[4]
+                bundle = control_store.resolve_bundle_for_tenant(tenant_id)
+                return _json_response(
+                    start_response,
+                    200,
+                    {
+                        "tenant_id": tenant_id,
+                        "bundle_version": bundle.bundle_version,
+                        "created_by": bundle.created_by,
+                        "change_summary": bundle.change_summary,
+                        "document": bundle.document,
+                    },
+                )
+
+            if method == "POST" and path == "/v1/control/distribution/sync":
+                if policy_distribution is None:
+                    return _json_response(start_response, 404, {"error": "control_plane_disabled"})
+                body = _read_json_body(environ)
+                result = policy_distribution.sync_tenant_bundle(
+                    tenant_id=body["tenant_id"],
+                    instance_id=body["instance_id"],
+                )
+                return _json_response(start_response, 200, result)
+
+            if method == "POST" and path == "/v1/control/audit/forward":
+                if audit_forwarder is None:
+                    return _json_response(start_response, 404, {"error": "control_plane_disabled"})
+                body = _read_json_body(environ) if environ.get("CONTENT_LENGTH") not in (None, "", "0") else {}
+                result = audit_forwarder.forward_once(batch_size=int(body.get("batch_size", 500)))
                 return _json_response(start_response, 200, result)
 
             return _json_response(start_response, 404, {"error": "not_found"})
