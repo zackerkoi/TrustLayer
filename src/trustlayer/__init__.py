@@ -1,6 +1,7 @@
 from .app import create_app
 from .audit import AuditStore
-from .audit_pipeline import AuditForwarder
+from .audit_bus import AuditBus
+from .audit_pipeline import AuditConsumer, AuditForwarder
 from .control_plane import ControlPlaneStore, PolicyDistributionService, RuleManagementService
 from .mcp_gateway import (
     CallableMCPToolAdapter,
@@ -17,6 +18,8 @@ from .service import DefenseGatewayService
 
 __all__ = [
     "AuditStore",
+    "AuditBus",
+    "AuditConsumer",
     "AuditForwarder",
     "CallableMCPToolAdapter",
     "ControlPlaneStore",

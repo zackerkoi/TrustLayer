@@ -5,7 +5,7 @@ from html import escape
 from urllib.parse import parse_qs
 from typing import Any, Callable, Iterable
 
-from .audit_pipeline import AuditForwarder
+from .audit_pipeline import AuditConsumer, AuditForwarder
 from .control_plane import ControlPlaneStore, PolicyDistributionService, RuleManagementService
 from .mcp_gateway import (
     MCPGatewayService,
@@ -25,6 +25,7 @@ def create_app(
     policy_distribution: PolicyDistributionService | None = None,
     control_store: ControlPlaneStore | None = None,
     audit_forwarder: AuditForwarder | None = None,
+    audit_consumer: AuditConsumer | None = None,
 ):
     def app(environ: dict[str, Any], start_response: StartResponse) -> Iterable[bytes]:
         method = environ.get("REQUEST_METHOD", "GET").upper()
@@ -247,6 +248,13 @@ def create_app(
                     return _json_response(start_response, 404, {"error": "control_plane_disabled"})
                 body = _read_json_body(environ) if environ.get("CONTENT_LENGTH") not in (None, "", "0") else {}
                 result = audit_forwarder.forward_once(batch_size=int(body.get("batch_size", 500)))
+                return _json_response(start_response, 200, result)
+
+            if method == "POST" and path == "/v1/control/audit/consume":
+                if audit_consumer is None:
+                    return _json_response(start_response, 404, {"error": "control_plane_disabled"})
+                body = _read_json_body(environ) if environ.get("CONTENT_LENGTH") not in (None, "", "0") else {}
+                result = audit_consumer.consume_once(batch_size=int(body.get("batch_size", 500)))
                 return _json_response(start_response, 200, result)
 
             return _json_response(start_response, 404, {"error": "not_found"})

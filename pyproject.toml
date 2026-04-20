@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 
 [project.optional-dependencies]
 postgres = ["psycopg[binary]>=3.2"]
+kafka = ["kafka-python>=2.0"]
 
 [tool.setuptools.packages.find]
 where = ["src"]

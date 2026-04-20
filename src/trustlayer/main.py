@@ -6,7 +6,8 @@ from wsgiref.simple_server import make_server
 
 from .app import create_app
 from .audit import AuditStore
-from .audit_pipeline import AuditForwarder
+from .audit_bus import AuditBus
+from .audit_pipeline import AuditConsumer, AuditForwarder
 from .control_plane import ControlPlaneStore, PolicyDistributionService, RuleManagementService
 from .mcp_gateway import build_default_mcp_gateway
 from .policy import PolicyConfig, PolicyStore
@@ -36,6 +37,11 @@ def parse_args() -> argparse.Namespace:
         help="SQLite file for centralized audit storage",
     )
     parser.add_argument(
+        "--audit-bus-url",
+        default=str(Path("audit-bus.sqlite3").resolve()),
+        help="Audit bus SQLite path or kafka://broker/topic URL",
+    )
+    parser.add_argument(
         "--gateway-instance-id",
         default="gw-local",
         help="Gateway instance identifier for policy distribution and audit forwarding",
@@ -59,11 +65,13 @@ def main() -> int:
     rule_management = RuleManagementService(control_store)
     policy_distribution = PolicyDistributionService(control_store, local_policy_store)
     central_audit = AuditStore(args.central_audit_db_path)
+    audit_bus = AuditBus(args.audit_bus_url)
     audit_forwarder = AuditForwarder(
         audit,
-        central_audit,
+        audit_bus,
         gateway_instance_id=args.gateway_instance_id,
     )
+    audit_consumer = AuditConsumer(audit_bus, central_audit)
     app = create_app(
         service,
         mcp_gateway=mcp_gateway,
@@ -71,6 +79,7 @@ def main() -> int:
         policy_distribution=policy_distribution,
         control_store=control_store,
         audit_forwarder=audit_forwarder,
+        audit_consumer=audit_consumer,
     )
 
     with make_server("127.0.0.1", args.port, app) as server:

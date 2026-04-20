@@ -204,6 +204,7 @@ sequenceDiagram
 - 本地执行面策略仍然落在本机 SQLite
 - 控制面元数据存储已经支持 `SQLite 开发 / PostgreSQL 生产` 双路径
 - 仓库里已经附了本地 PostgreSQL 真库验证脚本和 compose 文件
+- 审计回传链路已经拆成 `AuditForwarder -> AuditBus -> AuditConsumer -> Central Audit Storage`
 
 ### 4. Policy Distribution Service
 

@@ -56,6 +56,20 @@ PYTHONPATH=src python3 -m trustlayer.main \
 pip install '.[postgres]'
 ```
 
+审计回传默认走本地 SQLite 总线，生产路径支持切到 Kafka URL：
+
+```bash
+cd TrustLayer
+PYTHONPATH=src python3 -m trustlayer.main \
+  --audit-bus-url kafka://localhost:9092/trustlayer.audit
+```
+
+如果要启用 Kafka 总线依赖：
+
+```bash
+pip install '.[kafka]'
+```
+
 本地拉起 PostgreSQL 并跑一遍控制面真库集成测试：
 
 ```bash
@@ -122,6 +136,7 @@ PYTHONPATH=src python3 -m trustlayer.ops_report --db-path audit.sqlite3
 - `GET /v1/control/tenants/<tenant_id>/policy`
 - `POST /v1/control/distribution/sync`
 - `POST /v1/control/audit/forward`
+- `POST /v1/control/audit/consume`
 - `GET /v1/sessions/<session_id>/timeline`
 - `GET /v1/approvals/queue?tenant_id=<tenant>`
 - `GET /approvals/queue?tenant_id=<tenant>`
@@ -213,6 +228,12 @@ curl -s http://127.0.0.1:8080/v1/control/distribution/sync \
 
 ```bash
 curl -s http://127.0.0.1:8080/v1/control/audit/forward \
+  -H 'Content-Type: application/json' \
+  -d '{"batch_size":100}'
+```
+
+```bash
+curl -s http://127.0.0.1:8080/v1/control/audit/consume \
   -H 'Content-Type: application/json' \
   -d '{"batch_size":100}'
 ```

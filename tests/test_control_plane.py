@@ -9,7 +9,8 @@ from pathlib import Path
 
 from trustlayer.app import create_app
 from trustlayer.audit import AuditStore
-from trustlayer.audit_pipeline import AuditForwarder
+from trustlayer.audit_bus import AuditBus
+from trustlayer.audit_pipeline import AuditConsumer, AuditForwarder
 from trustlayer import control_plane
 from trustlayer.control_plane import ControlPlaneStore, PolicyDistributionService, RuleManagementService
 from trustlayer.policy import PolicyStore
@@ -42,9 +43,11 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         self.local_db = base / "local.sqlite3"
         self.control_db = base / "control.sqlite3"
         self.central_db = base / "central.sqlite3"
+        self.bus_db = base / "audit-bus.sqlite3"
         self.local_audit = AuditStore(self.local_db)
         self.local_policy = PolicyStore(self.local_db)
         self.central_audit = AuditStore(self.central_db)
+        self.audit_bus = AuditBus(self.bus_db)
         self.service = DefenseGatewayService(
             self.local_audit,
             policy_store=self.local_policy,
@@ -56,9 +59,10 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         self.distribution = PolicyDistributionService(self.control_store, self.local_policy)
         self.forwarder = AuditForwarder(
             self.local_audit,
-            self.central_audit,
+            self.audit_bus,
             gateway_instance_id="gw-test-1",
         )
+        self.consumer = AuditConsumer(self.audit_bus, self.central_audit)
 
     def tearDown(self) -> None:
         self.temp_dir.cleanup()
@@ -102,7 +106,7 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         distribution_state = self.control_store.distribution_state("gw-test-1", "tenant-a")
         self.assertEqual(distribution_state["bundle_version"], published["bundle_version"])
 
-    def test_audit_forwarder_moves_local_events_to_central_store(self) -> None:
+    def test_audit_forwarder_moves_local_events_through_bus_to_central_store(self) -> None:
         self.service.check_egress(
             tenant_id="tenant-b",
             session_id="sess_forward",
@@ -111,9 +115,11 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
             payload="contact alice@example.com",
         )
 
-        result = self.forwarder.forward_once()
-        self.assertGreater(result["forwarded_count"], 0)
-        self.assertGreater(self.local_audit.get_checkpoint("central_audit"), 0)
+        forwarded = self.forwarder.forward_once()
+        consumed = self.consumer.consume_once()
+        self.assertGreater(forwarded["forwarded_count"], 0)
+        self.assertGreater(consumed["consumed_count"], 0)
+        self.assertGreater(self.local_audit.get_checkpoint("audit_bus_forwarder"), 0)
 
         central_timeline = self.central_audit.timeline("sess_forward")
         self.assertTrue(central_timeline)
@@ -128,6 +134,7 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
             policy_distribution=self.distribution,
             control_store=self.control_store,
             audit_forwarder=self.forwarder,
+            audit_consumer=self.consumer,
         )
         config_path = Path(__file__).resolve().parents[1] / "config" / "policy.example.json"
         document = json.loads(config_path.read_text(encoding="utf-8"))
@@ -165,6 +172,30 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         self.assertEqual(binding["status"], "bound")
         self.assertEqual(synced["bundle_version"], published["bundle_version"])
         self.assertTrue(synced["updated"])
+
+    def test_control_plane_http_endpoints_forward_and_consume_audit_events(self) -> None:
+        app = create_app(
+            self.service,
+            rule_management=self.rule_management,
+            policy_distribution=self.distribution,
+            control_store=self.control_store,
+            audit_forwarder=self.forwarder,
+            audit_consumer=self.consumer,
+        )
+        self.service.check_egress(
+            tenant_id="tenant-audit-http",
+            session_id="sess_audit_http",
+            destination="https://audit-http.example/api",
+            destination_type="webhook",
+            payload="contact alice@example.com",
+        )
+
+        _, forward = call_wsgi(app, "POST", "/v1/control/audit/forward", {"batch_size": 100})
+        _, consume = call_wsgi(app, "POST", "/v1/control/audit/consume", {"batch_size": 100})
+
+        self.assertGreater(forward["forwarded_count"], 0)
+        self.assertGreater(consume["consumed_count"], 0)
+        self.assertTrue(self.central_audit.timeline("sess_audit_http"))
 
     def test_postgres_control_plane_target_requires_psycopg_or_uses_postgres_backend(self) -> None:
         dsn = "postgresql://trustlayer:secret@localhost:5432/trustlayer"
