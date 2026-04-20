@@ -7,6 +7,7 @@
 - `ingress sanitize`：来源分级、隐藏内容剥离、超长文本裁剪、风险打标
 - `egress check`：secret / PII 扫描、新域名检测、外发决策
 - `audit timeline`：按 `session_id` 回放关键事件
+- `mcp gateway`：统一代理 MCP / skill 风格输入，并复用 ingress sanitize
 
 ## 快速开始
 
@@ -49,6 +50,8 @@ PYTHONPATH=src python3 -m trustlayer.evaluation
 
 - `POST /v1/ingress/sanitize`
 - `POST /v1/egress/check`
+- `GET /v1/mcp/tools`
+- `POST /v1/mcp/tools/fetch`
 - `GET /v1/sessions/<session_id>/timeline`
 - `GET /v1/approvals/queue?tenant_id=<tenant>`
 - `GET /approvals/queue?tenant_id=<tenant>`

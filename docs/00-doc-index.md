@@ -51,6 +51,9 @@
 12. [12-trustlayer-boundaries.md](12-trustlayer-boundaries.md)
    TrustLayer 第一阶段边界说明：明确承诺、非承诺、已知 blind spot 与升级时机。
 
+13. [13-mcp-gateway.md](13-mcp-gateway.md)
+   MCP Gateway：把 ingress 从显式 sanitize API 演进成统一取数入口。
+
 ## 当前状态
 
 - 基础设施已具备最小可运行版本

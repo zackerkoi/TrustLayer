@@ -5,13 +5,17 @@ from html import escape
 from urllib.parse import parse_qs
 from typing import Any, Callable, Iterable
 
+from .mcp_gateway import MCPGatewayService, ToolNotFoundError
 from .service import DefenseGatewayService
 
 
 StartResponse = Callable[[str, list[tuple[str, str]]], None]
 
 
-def create_app(service: DefenseGatewayService):
+def create_app(
+    service: DefenseGatewayService,
+    mcp_gateway: MCPGatewayService | None = None,
+):
     def app(environ: dict[str, Any], start_response: StartResponse) -> Iterable[bytes]:
         method = environ.get("REQUEST_METHOD", "GET").upper()
         path = environ.get("PATH_INFO", "/")
@@ -92,6 +96,27 @@ def create_app(service: DefenseGatewayService):
                     _render_approval_queue_page(tenant_id, items),
                 )
 
+            if method == "GET" and path == "/v1/mcp/tools":
+                if mcp_gateway is None:
+                    return _json_response(start_response, 404, {"error": "mcp_gateway_disabled"})
+                return _json_response(
+                    start_response,
+                    200,
+                    {"items": mcp_gateway.list_tools()},
+                )
+
+            if method == "POST" and path == "/v1/mcp/tools/fetch":
+                if mcp_gateway is None:
+                    return _json_response(start_response, 404, {"error": "mcp_gateway_disabled"})
+                body = _read_json_body(environ)
+                result = mcp_gateway.fetch_tool(
+                    tenant_id=body["tenant_id"],
+                    session_id=body["session_id"],
+                    tool_name=body["tool_name"],
+                    arguments=body.get("arguments", {}),
+                )
+                return _json_response(start_response, 200, result)
+
             return _json_response(start_response, 404, {"error": "not_found"})
         except KeyError as exc:
             return _json_response(
@@ -101,6 +126,8 @@ def create_app(service: DefenseGatewayService):
             )
         except json.JSONDecodeError:
             return _json_response(start_response, 400, {"error": "invalid_json"})
+        except ToolNotFoundError as exc:
+            return _json_response(start_response, 404, {"error": "unknown_tool", "tool_name": str(exc)})
 
     return app
 
