@@ -57,10 +57,13 @@
 14. [14-unified-mcp-gateway.md](14-unified-mcp-gateway.md)
    Unified MCP Gateway 设计稿：底座合一，Ingress / Egress 策略分流。
 
+15. [15-operations-sop.md](15-operations-sop.md)
+   运营 SOP：规则配置、日常监控、误报/漏报处理与指标化运营。
+
 ## 当前状态
 
 - 基础设施已具备最小可运行版本
-- 当前测试总数：`47`
+- 当前测试总数：`49`
 - 当前全部通过
 - 下一开发顺序：
   1. 继续扩更真实的业务场景

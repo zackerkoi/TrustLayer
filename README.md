@@ -62,6 +62,17 @@ cd TrustLayer
 PYTHONPATH=src python3 -m trustlayer.evaluation
 ```
 
+输出一份最小运营报表：
+
+```bash
+cd TrustLayer
+PYTHONPATH=src python3 -m trustlayer.ops_report --db-path audit.sqlite3
+```
+
+运营规则、误报/漏报闭环和指标化方式，可参考：
+
+- [docs/15-operations-sop.md](docs/15-operations-sop.md)
+
 可用接口：
 
 - `POST /v1/ingress/sanitize`
