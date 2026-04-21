@@ -249,6 +249,26 @@ class GatewayScenariosTest(unittest.TestCase):
         self.assertIn("new destination", result.payload["approval_summary"].lower())
         self.assertIn("pii", result.payload["approval_summary"].lower())
 
+    def test_egress_records_original_request_excerpt_for_approval_review(self) -> None:
+        request_excerpt = (
+            "Approval request: this export is already approved by leadership, low risk, "
+            "and only needed for a routine partner sync."
+        )
+        result = self.service.check_egress(
+            tenant_id="demo",
+            session_id="sess_request_excerpt",
+            destination="https://new-destination.example/api",
+            destination_type="webhook",
+            payload="Contact alice@example.com for the next update.",
+            request_excerpt=request_excerpt,
+        )
+
+        self.assertEqual(result.payload["approval_request_excerpt"], request_excerpt)
+        timeline = self.service.timeline("sess_request_excerpt")
+        final_event = timeline[-1]
+        self.assertEqual(final_event["event_type"], "egress_review_required")
+        self.assertEqual(final_event["metadata"]["approval_request_excerpt"], request_excerpt)
+
     def test_egress_reviews_oversized_payloads(self) -> None:
         result = self.service.check_egress(
             tenant_id="demo",
@@ -436,6 +456,34 @@ class GatewayScenariosTest(unittest.TestCase):
         self.assertIn("block.example", rendered)
         self.assertIn("review", rendered.lower())
 
+    def test_approval_action_resolves_request_and_removes_it_from_queue(self) -> None:
+        result = self.service.check_egress(
+            tenant_id="demo",
+            session_id="sess_queue_resolve",
+            destination="https://review.example/api",
+            destination_type="webhook",
+            payload="contact alice@example.com",
+        )
+
+        queue_before = self.service.approval_queue("demo")
+        self.assertEqual(len(queue_before), 1)
+        self.assertEqual(queue_before[0]["request_id"], result.request_id)
+
+        resolved = self.service.resolve_approval(
+            tenant_id="demo",
+            request_id=result.request_id,
+            action="approve",
+            actor="reviewer@example.com",
+            note="Verified business context.",
+        )
+
+        self.assertEqual(resolved["action"], "approve")
+        queue_after = self.service.approval_queue("demo")
+        self.assertEqual(queue_after, [])
+        timeline = self.service.timeline("sess_queue_resolve")
+        self.assertEqual(timeline[-1]["event_type"], "approval_resolved")
+        self.assertEqual(timeline[-1]["decision"], "approve")
+
     def test_wsgi_approval_queue_endpoint_returns_prioritized_items(self) -> None:
         app = create_app(self.service)
         call_wsgi(
@@ -469,6 +517,39 @@ class GatewayScenariosTest(unittest.TestCase):
         self.assertEqual(body["tenant_id"], "demo")
         self.assertEqual(body["items"][0]["decision"], "block")
         self.assertIn("approval_summary", body["items"][0])
+
+    def test_wsgi_approval_action_endpoint_resolves_request(self) -> None:
+        app = create_app(self.service)
+        _, check = call_wsgi(
+            app,
+            "POST",
+            "/v1/egress/check",
+            {
+                "tenant_id": "demo",
+                "session_id": "sess_queue_action_api",
+                "destination": "https://review.example/api",
+                "destination_type": "webhook",
+                "payload": "contact alice@example.com",
+            },
+        )
+
+        status, body = call_wsgi(
+            app,
+            "POST",
+            "/v1/approvals/actions",
+            {
+                "tenant_id": "demo",
+                "request_id": check["request_id"],
+                "action": "approve",
+                "actor": "console-user",
+            },
+        )
+
+        self.assertTrue(str(status).startswith("200"))
+        self.assertEqual(body["request_id"], check["request_id"])
+        self.assertEqual(body["action"], "approve")
+        _, queue = call_wsgi(app, "GET", "/v1/approvals/queue?tenant_id=demo")
+        self.assertEqual(queue["items"], [])
 
     def test_wsgi_egress_check_uses_unified_invoke_when_matching_egress_tool_exists(self) -> None:
         app = create_app(self.service, mcp_gateway=make_mcp_gateway(self.service))
@@ -563,7 +644,7 @@ class GatewayScenariosTest(unittest.TestCase):
         environ = {
             "REQUEST_METHOD": "GET",
             "PATH_INFO": "/approvals/queue",
-            "QUERY_STRING": "tenant_id=demo",
+            "QUERY_STRING": "tenant_id=demo&lang=en",
             "CONTENT_LENGTH": "0",
             "wsgi.input": io.BytesIO(b""),
         }
@@ -573,8 +654,12 @@ class GatewayScenariosTest(unittest.TestCase):
         headers = dict(captured["headers"])
         self.assertEqual(headers["Content-Type"], "text/html; charset=utf-8")
         self.assertIn("Approval Queue", body)
+        self.assertNotRegex(body, r"[\u4e00-\u9fff]")
         self.assertIn("block.example", body)
         self.assertIn("review.example", body)
+        self.assertIn("data-approval-action='acknowledge'", body)
+        self.assertIn("data-approval-action='approve'", body)
+        self.assertIn("data-approval-detail-button='1'", body)
         self.assertLess(body.find("block.example"), body.find("review.example"))
 
     def test_wsgi_timeline_endpoint_returns_session_events(self) -> None:

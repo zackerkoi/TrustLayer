@@ -3,5 +3,12 @@ __pycache__/
 *.pyo
 .pytest_cache/
 audit.sqlite3
+*.sqlite3
 .venv/
 *.egg-info/
+artifacts/
+tmp/
+.env
+.env.*
+.npm-cache/
+.pw-browsers/

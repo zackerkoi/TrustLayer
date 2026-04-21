@@ -250,6 +250,12 @@ class RealisticScenarioComparisonTest(unittest.TestCase):
         self.assertIn("pii", controlled.summary.lower())
         self.assertNotIn("already approved", controlled.summary.lower())
         self.assertNotIn("low risk", controlled.summary.lower())
+        self.assertTrue(
+            any(
+                "already approved" in str(event["metadata"].get("approval_request_excerpt", "")).lower()
+                for event in controlled.audit_events
+            )
+        )
 
     def test_false_safe_wording_cannot_mask_secret_block_reason(self) -> None:
         baseline, controlled = run_false_safe_wording_scenario(
@@ -265,6 +271,12 @@ class RealisticScenarioComparisonTest(unittest.TestCase):
         self.assertIn("secret", controlled.summary.lower())
         self.assertNotIn("safe to send", controlled.summary.lower())
         self.assertNotIn("routine maintenance", controlled.summary.lower())
+        self.assertTrue(
+            any(
+                "safe to send" in str(event["metadata"].get("approval_request_excerpt", "")).lower()
+                for event in controlled.audit_events
+            )
+        )
 
 
 if __name__ == "__main__":

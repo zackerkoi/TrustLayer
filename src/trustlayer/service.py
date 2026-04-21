@@ -59,7 +59,12 @@ class DefenseGatewayService:
             event_type="source_received",
             summary=f"Received {source_type} from {origin}",
             metadata=self._merge_audit_metadata(
-                {"source_type": source_type, "origin": origin},
+                {
+                    "source_type": source_type,
+                    "origin": origin,
+                    "raw_content_excerpt": self._excerpt(content, limit=400),
+                    "raw_content_length": len(content),
+                },
                 audit_metadata,
                 snapshot=snapshot,
             ),
@@ -119,6 +124,8 @@ class DefenseGatewayService:
                     "removed_regions": removed_regions,
                     "risk_flags": risk_flags,
                     "content_hash": self._hash(visible_text),
+                    "visible_excerpt": payload["content"]["visible_excerpt"],
+                    "selected_chunks": payload["content"]["selected_chunks"],
                 },
                 audit_metadata,
                 snapshot=snapshot,
@@ -140,12 +147,14 @@ class DefenseGatewayService:
         destination: str,
         destination_type: str,
         payload: str,
+        request_excerpt: str | None = None,
         request_id: str | None = None,
         audit_metadata: dict[str, Any] | None = None,
     ) -> DecisionResult:
         request_id = request_id or self._request_id()
         snapshot = self.policy_store.snapshot()
         destination_host = (urlparse(destination).hostname or destination).lower()
+        approval_request_excerpt = self._excerpt(request_excerpt, limit=400) if request_excerpt else None
         self.audit.append_event(
             session_id=session_id,
             request_id=request_id,
@@ -157,6 +166,9 @@ class DefenseGatewayService:
                     "destination": destination,
                     "destination_host": destination_host,
                     "destination_type": destination_type,
+                    "payload_excerpt": self._excerpt(payload, limit=400),
+                    "payload_length": len(payload),
+                    "approval_request_excerpt": approval_request_excerpt,
                 },
                 audit_metadata,
                 snapshot=snapshot,
@@ -171,7 +183,14 @@ class DefenseGatewayService:
             "destination_type": destination_type,
             "payload": payload,
         }
-        risk_flags, matched_policies, triggered_rules = self._evaluate_egress_rules(snapshot, context)
+        (
+            decision,
+            risk_flags,
+            matched_policies,
+            triggered_rules,
+            decision_rule,
+            approval_summary,
+        ) = self._evaluate_egress_decision(snapshot=snapshot, context=context)
 
         for rule in triggered_rules:
             if rule.event_type:
@@ -183,14 +202,14 @@ class DefenseGatewayService:
                     event_type=rule.event_type,
                     summary=summary,
                     metadata=self._merge_audit_metadata(
-                        {"destination_host": destination_host},
+                        {
+                            "destination_host": destination_host,
+                            "approval_request_excerpt": approval_request_excerpt,
+                        },
                         audit_metadata,
                         snapshot=snapshot,
                     ),
                 )
-
-        decision_rule = snapshot.decision_rule_for("egress", risk_flags)
-        decision = decision_rule.decision
 
         self.audit.append_event(
             session_id=session_id,
@@ -204,6 +223,9 @@ class DefenseGatewayService:
                     "risk_flags": risk_flags,
                     "destination_host": destination_host,
                     "content_hash": self._hash(payload),
+                    "payload_excerpt": self._excerpt(payload, limit=400),
+                    "payload_length": len(payload),
+                    "approval_request_excerpt": approval_request_excerpt,
                 },
                 audit_metadata,
                 snapshot=snapshot,
@@ -219,18 +241,14 @@ class DefenseGatewayService:
                 policy_id=policy_id,
                 summary=f"Matched {policy_id}",
                 metadata=self._merge_audit_metadata(
-                    {"destination_host": destination_host},
+                    {
+                        "destination_host": destination_host,
+                        "approval_request_excerpt": approval_request_excerpt,
+                    },
                     audit_metadata,
                     snapshot=snapshot,
                 ),
             )
-
-        approval_summary = self._approval_summary(
-            snapshot=snapshot,
-            decision=decision,
-            destination_host=destination_host,
-            risk_flags=risk_flags,
-        )
         self.audit.append_event(
             session_id=session_id,
             request_id=request_id,
@@ -243,6 +261,9 @@ class DefenseGatewayService:
                     "destination_host": destination_host,
                     "risk_flags": risk_flags,
                     "approval_summary": approval_summary,
+                    "payload_excerpt": self._excerpt(payload, limit=400),
+                    "payload_length": len(payload),
+                    "approval_request_excerpt": approval_request_excerpt,
                 },
                 audit_metadata,
                 snapshot=snapshot,
@@ -256,6 +277,45 @@ class DefenseGatewayService:
                 "destination": destination,
                 "destination_type": destination_type,
                 "approval_summary": approval_summary,
+                "approval_request_excerpt": approval_request_excerpt,
+            },
+            matched_policies=matched_policies,
+        )
+
+    def preview_egress(
+        self,
+        *,
+        tenant_id: str,
+        destination: str,
+        destination_type: str,
+        payload: str,
+        request_excerpt: str | None = None,
+    ) -> DecisionResult:
+        snapshot = self.policy_store.snapshot()
+        destination_host = (urlparse(destination).hostname or destination).lower()
+        context = {
+            "tenant_id": tenant_id,
+            "session_id": "preview",
+            "destination": destination,
+            "destination_host": destination_host,
+            "destination_type": destination_type,
+            "payload": payload,
+        }
+        decision, risk_flags, matched_policies, _, _, approval_summary = self._evaluate_egress_decision(
+            snapshot=snapshot,
+            context=context,
+        )
+        return DecisionResult(
+            request_id="preview",
+            decision=decision,
+            risk_flags=risk_flags,
+            payload={
+                "destination": destination,
+                "destination_type": destination_type,
+                "approval_summary": approval_summary,
+                "approval_request_excerpt": self._excerpt(request_excerpt, limit=400)
+                if request_excerpt
+                else None,
             },
             matched_policies=matched_policies,
         )
@@ -288,6 +348,54 @@ class DefenseGatewayService:
             priority=priority,
             limit=limit,
         )
+
+    def resolve_approval(
+        self,
+        *,
+        tenant_id: str,
+        request_id: str,
+        action: str,
+        actor: str,
+        note: str | None = None,
+    ) -> dict[str, Any]:
+        if action not in {"approve", "reject", "acknowledge"}:
+            raise ValueError(f"Unsupported approval action: {action}")
+
+        latest = self.audit.latest_event_for_request(tenant_id, request_id)
+        if latest is None:
+            raise LookupError(f"Unknown approval request: {request_id}")
+
+        metadata = {
+            "approval_action": action,
+            "approval_actor": actor,
+            "approval_note": note or "",
+            "original_event_type": latest.event_type,
+            "original_decision": latest.decision or "",
+            "destination_host": latest.metadata.get("destination_host", ""),
+            "risk_flags": latest.metadata.get("risk_flags", []),
+        }
+        summary = f"{actor} marked {request_id} as {action}"
+        if note:
+            summary += f" ({note})"
+        self.audit.append_event(
+            session_id=latest.session_id,
+            request_id=request_id,
+            tenant_id=tenant_id,
+            event_type="approval_resolved",
+            decision=action,
+            policy_id="approval_manual_resolution",
+            summary=summary,
+            metadata=metadata,
+        )
+        return {
+            "tenant_id": tenant_id,
+            "request_id": request_id,
+            "session_id": latest.session_id,
+            "action": action,
+            "actor": actor,
+            "note": note or "",
+            "original_decision": latest.decision or "",
+        }
 
     def _sanitize_content(self, extractor_kind: str, content: str) -> tuple[str, list[str]]:
         if extractor_kind == "visible_text":
@@ -333,6 +441,23 @@ class DefenseGatewayService:
                 matched_policies.append(rule.policy_id)
                 triggered_rules.append(rule)
         return sorted(set(flags)), self._dedupe(matched_policies), triggered_rules
+
+    def _evaluate_egress_decision(
+        self,
+        *,
+        snapshot: PolicySnapshot,
+        context: dict[str, Any],
+    ) -> tuple[str, list[str], list[str], list[DetectorRule], Any, str]:
+        risk_flags, matched_policies, triggered_rules = self._evaluate_egress_rules(snapshot, context)
+        decision_rule = snapshot.decision_rule_for("egress", risk_flags)
+        decision = decision_rule.decision
+        approval_summary = self._approval_summary(
+            snapshot=snapshot,
+            decision=decision,
+            destination_host=str(context["destination_host"]),
+            risk_flags=risk_flags,
+        )
+        return decision, risk_flags, matched_policies, triggered_rules, decision_rule, approval_summary
 
     def _rule_matches(
         self,
@@ -387,6 +512,12 @@ class DefenseGatewayService:
 
     def _request_id(self) -> str:
         return f"req_{uuid.uuid4().hex[:12]}"
+
+    def _excerpt(self, value: str, *, limit: int) -> str:
+        normalized = self._normalize_text(value)
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[:limit] + "..."
 
     def _approval_summary(
         self,

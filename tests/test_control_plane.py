@@ -56,6 +56,29 @@ def call_wsgi_text(app, method: str, path: str):
     return captured["status"], response.decode("utf-8")
 
 
+def call_wsgi_form(app, path: str, form: dict[str, str]):
+    from urllib.parse import urlencode
+
+    payload = urlencode(form).encode("utf-8")
+    captured: dict[str, object] = {}
+
+    def start_response(status, headers):
+        captured["status"] = status
+        captured["headers"] = headers
+
+    environ = {
+        "REQUEST_METHOD": "POST",
+        "PATH_INFO": path,
+        "QUERY_STRING": "",
+        "CONTENT_LENGTH": str(len(payload)),
+        "CONTENT_TYPE": "application/x-www-form-urlencoded",
+        "wsgi.input": io.BytesIO(payload),
+    }
+    response = b"".join(app(environ, start_response))
+    headers = dict(captured.get("headers", []))
+    return captured["status"], headers, response.decode("utf-8")
+
+
 class ControlPlaneIntegrationTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -243,7 +266,7 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
             payload="contact alice@example.com",
         )
 
-        status, html = call_wsgi_text(app, "GET", "/console/dashboard")
+        status, html = call_wsgi_text(app, "GET", "/console/dashboard?lang=en")
         self.assertEqual(status, "200 OK")
         self.assertIn("TrustLayer Control Console", html)
         self.assertIn("Review Required", html)
@@ -266,7 +289,7 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         )
         self.rule_management.bind_tenant("tenant-policy", published["bundle_version"])
 
-        status, html = call_wsgi_text(app, "GET", "/console/policies?tenant_id=tenant-policy")
+        status, html = call_wsgi_text(app, "GET", "/console/policies?tenant_id=tenant-policy&lang=en")
         self.assertEqual(status, "200 OK")
         self.assertIn("Policy Bundles", html)
         self.assertIn("policy-admin@example.com", html)
@@ -277,6 +300,41 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         self.assertIn("Decision Rules", html)
         self.assertIn("egress_secret_block_decision", html)
         self.assertIn("ingress_hidden_content", html)
+
+    def test_console_policy_management_form_publishes_binds_and_syncs(self) -> None:
+        app = create_app(
+            self.service,
+            rule_management=self.rule_management,
+            policy_distribution=self.distribution,
+            control_store=self.control_store,
+        )
+        config_path = Path(__file__).resolve().parents[1] / "config" / "policy.example.json"
+        document = json.loads(config_path.read_text(encoding="utf-8"))
+        document["settings"]["allowed_destination_hosts"] = ["ui-managed.example"]
+
+        status, headers, _ = call_wsgi_form(
+            app,
+            "/console/policies/publish",
+            {
+                "created_by": "console-admin@example.com",
+                "change_summary": "Publish from control console form.",
+                "tenant_id": "tenant-form",
+                "instance_id": "gw-test-1",
+                "document_json": json.dumps(document),
+            },
+        )
+
+        self.assertEqual(status, "303 SEE OTHER")
+        self.assertIn("/console/policies?tenant_id=tenant-form&published=", headers["Location"])
+        resolved = self.control_store.resolve_bundle_for_tenant("tenant-form")
+        self.assertEqual(resolved.created_by, "console-admin@example.com")
+
+        snapshot = self.local_policy.snapshot()
+        self.assertEqual(snapshot.setting("policy_bundle_version"), resolved.bundle_version)
+        self.assertIn("ui-managed.example", snapshot.setting("allowed_destination_hosts", []))
+
+        distribution_state = self.control_store.distribution_state("gw-test-1", "tenant-form")
+        self.assertEqual(distribution_state["bundle_version"], resolved.bundle_version)
 
     def test_console_distribution_page_filters_by_tenant(self) -> None:
         app = create_app(
@@ -297,12 +355,58 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         self.distribution.sync_tenant_bundle(tenant_id="tenant-dist-a", instance_id="gw-test-1")
         self.distribution.sync_tenant_bundle(tenant_id="tenant-dist-b", instance_id="gw-test-2")
 
-        status, html = call_wsgi_text(app, "GET", "/console/distribution?tenant_id=tenant-dist-a")
+        status, html = call_wsgi_text(app, "GET", "/console/distribution?tenant_id=tenant-dist-a&lang=en")
         self.assertEqual(status, "200 OK")
         self.assertIn("Distribution", html)
         self.assertIn("tenant-dist-a", html)
         self.assertIn("gw-test-1", html)
         self.assertNotIn("tenant-dist-b</td>", html)
+
+    def test_console_approvals_page_uses_shared_console_layout(self) -> None:
+        app = create_app(
+            self.service,
+            rule_management=self.rule_management,
+            policy_distribution=self.distribution,
+            control_store=self.control_store,
+        )
+        result = self.service.check_egress(
+            tenant_id="tenant-approvals",
+            session_id="sess_approvals",
+            destination="https://review.example/api",
+            destination_type="webhook",
+            payload="contact alice@example.com",
+            request_excerpt="Approval request: already approved and low risk.",
+        )
+
+        status, html = call_wsgi_text(app, "GET", "/console/approvals?tenant_id=tenant-approvals")
+        self.assertEqual(status, "200 OK")
+        self.assertIn("TrustLayer", html)
+        self.assertIn("审批队列", html)
+        self.assertIn("/console/dashboard", html)
+        self.assertIn("/console/approvals?tenant_id=demo&amp;lang=zh", html)
+        self.assertIn("data-approval-action='approve'", html)
+        self.assertIn("批准", html)
+
+        status, english_html = call_wsgi_text(app, "GET", "/console/approvals?tenant_id=tenant-approvals&lang=en")
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Approval Queue", english_html)
+        self.assertIn("Approve", english_html)
+        self.assertNotRegex(english_html, r"[\u4e00-\u9fff]")
+
+        status, zh_html = call_wsgi_text(app, "GET", "/console/approvals?tenant_id=tenant-approvals&lang=zh")
+        self.assertEqual(status, "200 OK")
+        self.assertIn("审批队列", zh_html)
+        self.assertIn("批准", zh_html)
+        self.assertNotIn(">Approval Queue<", zh_html)
+
+        status, detail_html = call_wsgi_text(
+            app,
+            "GET",
+            f"/approvals/request?tenant_id=tenant-approvals&request_id={result.request_id}&lang=en",
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Original Approval Wording", detail_html)
+        self.assertIn("already approved and low risk", detail_html)
 
     def test_console_audit_page_renders_search_results(self) -> None:
         app = create_app(
@@ -322,13 +426,51 @@ class ControlPlaneIntegrationTest(unittest.TestCase):
         status, html = call_wsgi_text(
             app,
             "GET",
-            "/console/audit?tenant_id=tenant-audit-search&destination_host=audit-search.example",
+            "/console/audit?tenant_id=tenant-audit-search&destination_host=audit-search.example&lang=en",
         )
         self.assertEqual(status, "200 OK")
         self.assertIn("Audit Search", html)
         self.assertIn("tenant-audit-search", html)
         self.assertIn("audit-search.example", html)
         self.assertIn("secret_detected", html)
+        self.assertNotIn("Event Details", html)
+        self.assertIn("sess_audit_search", html)
+        self.assertIn("Details", html)
+        self.assertIn("data-request-detail-row", html)
+        self.assertIn("insertAdjacentElement('afterend', detailRow)", html)
+        self.assertNotRegex(html, r"[\u4e00-\u9fff]")
+        self.assertNotIn("Payload Excerpt", html)
+        self.assertNotIn("Raw Metadata JSON", html)
+
+        request_id = self.service.audit.timeline("sess_audit_search")[0].request_id
+        status, detail_html = call_wsgi_text(
+            app,
+            "GET",
+            f"/console/audit/request?tenant_id=tenant-audit-search&request_id={request_id}&lang=en",
+        )
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Payload Excerpt", detail_html)
+        self.assertIn("AKIAIOSFODNN7EXAMPLE", detail_html)
+        self.assertIn("Raw Metadata JSON", detail_html)
+
+    def test_console_demo_runs_page_lists_live_artifacts(self) -> None:
+        app = create_app(
+            self.service,
+            rule_management=self.rule_management,
+            policy_distribution=self.distribution,
+            control_store=self.control_store,
+        )
+        status, html = call_wsgi_text(app, "GET", "/console/demo-runs?lang=en")
+        self.assertEqual(status, "200 OK")
+        self.assertIn("Demo Runs", html)
+        self.assertIn("supplier_research", html)
+        self.assertIn("support_escalation", html)
+        self.assertIn("Open JSON", html)
+        self.assertIn("artifacts/live-runs/2026-04-21/supplier_baseline.json", html)
+        self.assertIn("Approval Wording Comparisons", html)
+        self.assertIn("Original Approval Wording", html)
+        self.assertIn("Causal Timeline", html)
+        self.assertNotRegex(html, r"[\u4e00-\u9fff]")
 
     def test_postgres_control_plane_target_requires_psycopg_or_uses_postgres_backend(self) -> None:
         dsn = "postgresql://trustlayer:secret@localhost:5432/trustlayer"

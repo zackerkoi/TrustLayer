@@ -32,7 +32,7 @@ class AuditStore:
     def _connect(self) -> sqlite3.Connection:
         if self.db_path == ":memory:":
             if self._memory_conn is None:
-                self._memory_conn = sqlite3.connect(self.db_path)
+                self._memory_conn = sqlite3.connect(self.db_path, check_same_thread=False)
                 self._memory_conn.row_factory = sqlite3.Row
             return self._memory_conn
         conn = sqlite3.connect(self.db_path)
@@ -246,9 +246,22 @@ class AuditStore:
                 """,
                 (tenant_id, *event_types),
             ).fetchall()
+            resolved_rows = conn.execute(
+                """
+                SELECT request_id
+                FROM events
+                WHERE tenant_id = ?
+                  AND event_type = 'approval_resolved'
+                """,
+                (tenant_id,),
+            ).fetchall()
+
+        resolved_request_ids = {str(row["request_id"]) for row in resolved_rows}
 
         items: list[dict[str, Any]] = []
         for row in rows:
+            if row["request_id"] in resolved_request_ids:
+                continue
             metadata = json.loads(row["metadata_json"])
             items.append(
                 {
@@ -258,6 +271,7 @@ class AuditStore:
                     "decision": row["decision"],
                     "summary": row["summary"],
                     "approval_summary": metadata.get("approval_summary"),
+                    "approval_request_excerpt": metadata.get("approval_request_excerpt"),
                     "risk_flags": metadata.get("risk_flags", []),
                     "destination_host": metadata.get("destination_host"),
                     "created_at": row["created_at"],
@@ -266,6 +280,36 @@ class AuditStore:
 
         items.sort(key=lambda item: (priority.get(item["decision"], 99), item["created_at"], item["request_id"]))
         return items[:limit]
+
+    def latest_event_for_request(self, tenant_id: str, request_id: str) -> AuditEvent | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT rowid AS sequence, event_id, session_id, request_id, tenant_id, event_type,
+                       decision, policy_id, summary, metadata_json, created_at
+                FROM events
+                WHERE tenant_id = ?
+                  AND request_id = ?
+                ORDER BY rowid DESC
+                LIMIT 1
+                """,
+                (tenant_id, request_id),
+            ).fetchone()
+        if row is None:
+            return None
+        return AuditEvent(
+            sequence=int(row["sequence"]),
+            event_id=row["event_id"],
+            session_id=row["session_id"],
+            request_id=row["request_id"],
+            tenant_id=row["tenant_id"],
+            event_type=row["event_type"],
+            decision=row["decision"],
+            policy_id=row["policy_id"],
+            summary=row["summary"],
+            metadata=json.loads(row["metadata_json"]),
+            created_at=row["created_at"],
+        )
 
     def search_events(
         self,

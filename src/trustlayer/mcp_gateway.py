@@ -293,6 +293,8 @@ class MCPGatewayService:
                 "source_type": effective_source_type,
                 "origin": origin,
                 "result_metadata": result_metadata or {},
+                "tool_output_excerpt": self._excerpt(content, limit=400),
+                "tool_output_length": len(content),
             },
         )
         sanitized = self.defense.sanitize_ingress(
@@ -358,6 +360,7 @@ class MCPGatewayService:
             metadata={
                 **audit_metadata,
                 "arguments": arguments,
+                "arguments_pretty": json.dumps(arguments, ensure_ascii=True, sort_keys=True),
             },
         )
 
@@ -383,6 +386,8 @@ class MCPGatewayService:
                 "source_type": tool_result.source_type,
                 "origin": tool_result.origin,
                 "result_metadata": tool_result.metadata,
+                "tool_output_excerpt": self._excerpt(tool_result.content, limit=400),
+                "tool_output_length": len(tool_result.content),
             },
         )
 
@@ -430,6 +435,7 @@ class MCPGatewayService:
     ) -> dict[str, Any]:
         destination = str(arguments["destination"])
         payload = str(arguments["payload"])
+        request_excerpt = str(arguments.get("request_excerpt", "") or "")
         destination_type = spec.destination_type or str(arguments.get("destination_type", "external"))
         self.defense.audit.append_event(
             session_id=session_id,
@@ -441,6 +447,9 @@ class MCPGatewayService:
                 **audit_metadata,
                 "destination": destination,
                 "destination_type": destination_type,
+                "payload_excerpt": self._excerpt(payload, limit=400),
+                "payload_length": len(payload),
+                "approval_request_excerpt": self._excerpt(request_excerpt, limit=400) if request_excerpt else None,
             },
         )
         decision = self.defense.check_egress(
@@ -449,6 +458,7 @@ class MCPGatewayService:
             destination=destination,
             destination_type=destination_type,
             payload=payload,
+            request_excerpt=request_excerpt or None,
             request_id=request_id,
             audit_metadata=audit_metadata,
         )
@@ -469,6 +479,12 @@ class MCPGatewayService:
             "matched_policies": decision.matched_policies,
             "egress": decision.payload,
         }
+
+    def _excerpt(self, value: str, *, limit: int) -> str:
+        normalized = " ".join(value.split())
+        if len(normalized) <= limit:
+            return normalized
+        return normalized[:limit] + "..."
 
 
 def build_default_mcp_gateway(defense_service: DefenseGatewayService) -> MCPGatewayService:
